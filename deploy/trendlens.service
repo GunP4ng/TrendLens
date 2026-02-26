@@ -1,0 +1,15 @@
+[Unit]
+Description=TrendLens Discord Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/trendlens
+EnvironmentFile=/home/ubuntu/trendlens/.env
+ExecStart=/usr/bin/node /home/ubuntu/trendlens/src/index.js
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
