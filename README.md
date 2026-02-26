@@ -65,11 +65,9 @@ npm start
 
 | 명령어 | 설명 |
 |--------|------|
-| `/trend` | 전체 소스 최신 트렌드 즉시 조회 |
-| `/trend sources:hackernews` | 특정 소스만 조회 (hn / reddit / github / huggingface) |
-| `/trend limit:5` | 소스당 항목 수 지정 (기본 5, 최대 20) |
-| `/source <url>` | 특정 URL 단건 AI 요약 |
-| `/summarize <text>` | 직접 입력한 텍스트 AI 요약 |
+| `/trend` | 전체 소스 최신 트렌드 즉시 조회 (AI 요약 포함, API 키 필요) |
+| `/trend date:<YYYY-MM-DD>` | 특정 날짜 트렌드 조회 |
+| `/source url:<URL>` | URL 단건 AI 분석 리포트 생성 (API 키 필요) |
 
 ### API 키 관리
 
@@ -83,25 +81,29 @@ npm start
 
 | 명령어 | 설명 |
 |--------|------|
-| `/reddit login` | Reddit OAuth 자격증명 등록 |
+| `/reddit login <client_id> <client_secret>` | Reddit OAuth 자격증명 등록 |
 | `/reddit status` | 인증 상태 확인 |
-| `/reddit logout` | 인증 정보 삭제 |
+| `/reddit remove` | 인증 정보 삭제 |
 
-### 봇 설정
+### 봇 설정 (관리자 전용)
 
 | 명령어 | 설명 |
 |--------|------|
 | `/config channel <채널>` | 자동 전송 채널 지정 |
-| `/config schedule <cron>` | 자동 전송 스케줄 변경 (기본 `0 9 * * *`) |
-| `/config sources <소스>` | 활성화 소스 토글 |
-| `/config show` | 현재 설정 전체 표시 |
+| `/config time <HH:MM>` | 자동 전송 시간 변경 (기본 `09:00` KST) |
+| `/config sources <소스> <ON\|OFF>` | 소스별 활성화/비활성화 토글 |
+| `/config cooldown <초>` | 명령어 쿨다운 설정 (60~600초, 기본 300초) |
+| `/config language <언어>` | 요약 언어 변경 (한국어 / English) |
+| `/config gemini_rpd <한도>` | Gemini 일일 쿼터 한도 설정 (10~500, 기본 50) |
 
-### 정보
+### 정보 및 모니터링
 
 | 명령어 | 설명 |
 |--------|------|
 | `/help` | 전체 명령어 목록 및 사용법 |
-| `/status` | 봇 상태, 업타임, 설정 요약 |
+| `/status` | 봇 상태, 업타임, 채널, 소스 설정 요약 |
+| `/quota` | 내 Gemini API 일일 사용량 확인 |
+| `/logs` | 오늘의 실행 로그 조회 (관리자 전용) |
 
 ---
 
@@ -153,11 +155,11 @@ trendlens/
 | 설정 | 기본값 | 설명 |
 |------|--------|------|
 | `channel` | 미설정 | 자동 전송 채널 ID |
-| `schedule` | `0 9 * * *` | 자동 전송 크론 스케줄 (매일 오전 9시 KST) |
-| `sources` | 전체 활성 | 수집 소스 활성화 목록 |
-| `limitPerSource` | `5` | 소스당 항목 수 |
-
-> 자세한 요구사항 명세는 [BUILD_TEXT.md](BUILD_TEXT.md)를 참고하세요.
+| `time` | `09:00` | 자동 전송 시간 (HH:MM, KST 기준) |
+| `sources` | 전체 활성 | 수집 소스별 활성화 여부 (hackernews/reddit/github/huggingface) |
+| `cooldown` | `300` | 명령어 쿨다운 (초) |
+| `language` | `ko` | 요약 언어 (`ko` / `en`) |
+| `geminiRpd` | `50` | 사용자별 Gemini API 일일 요청 한도 |
 
 ---
 
