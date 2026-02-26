@@ -182,8 +182,13 @@ function getAnyRedditCredentials() {
   return null;
 }
 
+function getAnyKey() {
+  for (const key of keys.values()) return key;
+  return null;
+}
+
 module.exports = {
-  setKey, getKey, removeKey, hasKey, getKeyPreview,
+  setKey, getKey, removeKey, hasKey, getKeyPreview, getAnyKey,
   setReddit, getReddit, removeReddit, hasReddit, getRedditPreview, getAnyRedditCredentials,
   incrementUsage, getUsage, isQuotaExceeded, getQuotaWarningLevel,
   resetDailyUsage, restoreFromDisk, shouldNotifyRestart, hashUserId,

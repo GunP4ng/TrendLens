@@ -102,7 +102,7 @@ async function runPipeline({ date, sources, userId, apiKey, redditCredentials } 
     logger.info(`[Pipeline] aiSummary 매핑: ${mapped}/${topByScore.length}건`);
   }
 
-  const dateStr = date || new Date().toISOString().slice(0, 10);
+  const dateStr = date || new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const messages = formatter.formatTrendMessage(allItems, parsedData, dateStr);
 
   const meta = {

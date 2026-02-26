@@ -261,7 +261,8 @@ async function handleTrend(interaction) {
   try {
     const apiKey = keyStore.getKey(userId);
     const date = dateOpt || undefined;
-    const isPast = dateOpt && dateOpt !== new Date().toISOString().slice(0, 10);
+    const todayKst = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const isPast = !!dateOpt && dateOpt < todayKst;
 
     const sources = isPast
       ? { hackernews: true, reddit: false, github: false, huggingface: true }
@@ -717,14 +718,14 @@ function startCron() {
         return;
       }
       const cronRedditCred = keyStore.getAnyRedditCredentials();
-      const result = await runPipeline({ sources: config.get('sources'), redditCredentials: cronRedditCred });
+      const cronApiKey = keyStore.getAnyKey();
+      const result = await runPipeline({ sources: config.get('sources'), apiKey: cronApiKey, redditCredentials: cronRedditCred });
       lastPipelineRun = new Date().toISOString();
       const channel = client.channels.cache.get(channelId);
       if (channel) {
         for (const msg of result.messages) {
           await channel.send({ content: msg, flags: MessageFlags.SuppressEmbeds });
         }
-        await channel.send('💡 AI 요약을 보려면 /trend 명령어를 사용해주세요. (개인 API 키 필요)');
       } else {
         logger.warn(`스케줄 전송 실패: 채널 ${channelId}을 찾을 수 없습니다`);
       }
