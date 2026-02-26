@@ -18,7 +18,9 @@
 | **자동 스케줄링** | `node-cron` 기반 매일 정해진 시간에 설정 채널로 자동 전송 |
 | **슬래시 명령어** | Discord 네이티브 `/` 명령어로 온디맨드 조회 및 봇 설정 관리 |
 | **개인 Reddit OAuth** | 사용자별 Reddit 계정 로그인으로 개인화된 피드 수집 |
-| **SSRF 방어** | 내부 IP·루프백 주소 요청 차단으로 서버 보안 강화 |
+| **SSRF 방어** | IPv4/IPv6, A/AAAA, IP literal 검사로 내부망 접근 차단 |
+| **멘션 안전화** | 외부 콘텐츠 전송 시 `allowedMentions` 차단으로 무분별한 ping 방지 |
+| **품질 게이트** | `lint + typecheck + test` 빌드 검증 및 GitHub Actions CI 제공 |
 
 ---
 
@@ -103,7 +105,7 @@ npm start
 | `/help` | 전체 명령어 목록 및 사용법 |
 | `/status` | 봇 상태, 업타임, 채널, 소스 설정 요약 |
 | `/quota` | 내 Gemini API 일일 사용량 확인 |
-| `/logs` | 오늘의 실행 로그 조회 (관리자 전용) |
+| `/logs` | 오늘의 실행 로그 조회 (관리자 전용, KST 기준 파일) |
 
 ---
 
@@ -126,13 +128,20 @@ trendlens/
 │       ├── github-trending.js  # GitHub Trending 스크래핑 + Search API 폴백
 │       └── huggingface.js  # HuggingFace Daily Papers API
 ├── tests/
+│   ├── config.test.js
+│   ├── fetchers.test.js
 │   ├── formatter.test.js
 │   ├── keyStore.test.js
-│   └── pipeline.test.js
+│   ├── pipeline.test.js
+│   └── summarizer.test.js
+├── .github/
+│   └── workflows/
+│       └── ci.yml            # lint/typecheck/test 자동 검증
 ├── deploy/
 │   └── trendlens.service   # systemd 서비스 유닛 파일
 ├── logs/                   # 런타임 로그 & Gemini 사용량 (gitignore)
 ├── .env.example
+├── eslint.config.cjs
 ├── package.json
 └── vitest.config.js
 ```
@@ -189,8 +198,20 @@ sudo journalctl -u trendlens -f    # 실시간 로그
 ## Testing
 
 ```bash
+# 정적 분석
+npm run lint
+
+# 문법 기반 타입/구문 검증
+npm run typecheck
+
 # 전체 단위 테스트 실행
 npm test
+
+# 전체 품질 게이트 (lint + typecheck + test)
+npm run build
+
+# 운영 의존성 취약점 점검
+npm audit --omit=dev
 
 # 특정 테스트 파일만 실행
 npx vitest run tests/formatter.test.js
@@ -200,6 +221,12 @@ node -e "require('./src/fetchers/hackernews').fetch().then(r => console.log(r.sl
 node -e "require('./src/fetchers/huggingface').fetch().then(r => console.log(r.slice(0,2)))"
 node -e "require('./src/fetchers/github-trending').fetch().then(r => console.log(r.slice(0,2)))"
 ```
+
+## CI
+
+- GitHub Actions: `.github/workflows/ci.yml`
+- 트리거: `main`, `master` 브랜치 push 및 모든 Pull Request
+- 실행 항목: `npm ci` → `npm run build`
 
 ---
 

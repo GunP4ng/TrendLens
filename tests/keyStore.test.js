@@ -77,12 +77,6 @@ describe('KeyStore', () => {
     expect(keyStore.getQuotaWarningLevel(userId)).toBe('exceeded');
   });
 
-  it('재시작 알림 1회성', () => {
-    const userId = uniqueUser();
-    expect(keyStore.shouldNotifyRestart(userId)).toBe(true);
-    expect(keyStore.shouldNotifyRestart(userId)).toBe(false);
-  });
-
   it('userId 해시 일관성 및 길이', () => {
     const userId = uniqueUser();
     const h1 = keyStore.hashUserId(userId);

@@ -5,10 +5,21 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
+    "lint": "eslint src tests --max-warnings=0",
+    "typecheck": "node --check src/index.js src/pipeline.js src/config.js src/keyStore.js src/summarizer.js src/formatter.js src/urlUtils.js src/logger.js src/fetchers/hackernews.js src/fetchers/reddit.js src/fetchers/github-trending.js src/fetchers/huggingface.js tests/config.test.js tests/formatter.test.js tests/keyStore.test.js tests/pipeline.test.js tests/summarizer.test.js tests/fetchers.test.js",
+    "build": "npm run lint && npm run typecheck && npm test",
     "test": "vitest run"
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "overrides": {
+    "discord.js": {
+      "undici": "6.23.0"
+    },
+    "@discordjs/rest": {
+      "undici": "6.23.0"
+    }
   },
   "dependencies": {
     "@extractus/article-extractor": "^8.0.0",
@@ -20,6 +31,7 @@
     "winston": "^3.17.0"
   },
   "devDependencies": {
+    "eslint": "^9.21.0",
     "msw": "^2.7.0",
     "vitest": "^3.0.0"
   }

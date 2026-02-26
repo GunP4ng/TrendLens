@@ -25,16 +25,13 @@ function getKstDateString() {
   return `${y}.${m}.${d} (${dayName})`;
 }
 
-/**
- * summary 텍스트를 maxLen자로 자르고 '...' 추가
- * @param {string} text
- * @param {number} maxLen
- * @returns {string}
- */
-function truncateSummary(text, maxLen = 150) {
-  if (!text || typeof text !== 'string') return '';
-  const trimmed = text.trim();
-  return trimmed.length <= maxLen ? trimmed : `${trimmed.slice(0, maxLen)}...`;
+function getKstIsoDate() {
+  const now = new Date();
+  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const y = kst.getUTCFullYear();
+  const m = String(kst.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(kst.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 /**
@@ -221,125 +218,11 @@ function formatStatusMessage(stats) {
   ].join('\n');
 }
 
-/**
- * 소스별 섹션 문자열 생성
- * @param {Object[]} items - 해당 소스의 rawItems
- * @returns {string}
- */
-function renderHackerNews(items) {
-  if (items.length === 0) return '';
-  let section = `📰 HackerNews (${items.length}건)\n`;
-  for (const item of items) {
-    section += `[${item.score}pt] ${item.title}\n`;
-    section += `<${item.url}>\n`;
-    if (item.summary) section += `↳ 💡 ${item.summary}\n`;
-    section += '\n';
-  }
-  return section.trimEnd();
-}
-
-function renderReddit(items) {
-  if (items.length === 0) return '';
-  let section = `💬 Reddit (${items.length}건)\n`;
-  for (const item of items) {
-    const sub = item.metadata?.subreddit || 'unknown';
-    section += `[r/${sub}] ${item.title}\n`;
-    section += `<${item.url}>\n`;
-    if (item.summary) section += `↳ 💡 ${item.summary}\n`;
-    section += '\n';
-  }
-  return section.trimEnd();
-}
-
-function renderGitHub(items) {
-  if (items.length === 0) return '';
-  let section = `⭐ GitHub Trending (${items.length}건)\n`;
-  for (const item of items) {
-    const stars = item.metadata?.stars ?? item.score;
-    section += `📦 ${item.title} (★ ${stars})\n`;
-    section += `<${item.url}>\n`;
-    if (item.summary) section += `↳ ✨ ${item.summary}\n`;
-    section += '\n';
-  }
-  return section.trimEnd();
-}
-
-function renderHuggingFace(items) {
-  if (items.length === 0) return '';
-  let section = `📄 HuggingFace Papers (${items.length}건)\n`;
-  for (const item of items) {
-    const upvotes = item.metadata?.upvotes ?? item.score;
-    section += `📜 ${item.title} (↑ ${upvotes})\n`;
-    section += `<${item.url}>\n`;
-    if (item.summary) section += `↳ 💡 ${item.summary}\n`;
-    section += '\n';
-  }
-  return section.trimEnd();
-}
-
-/**
- * AI 요약 + 소스별 트렌드 항목 + AI 분석을 하나의 포맷으로 조합하여
- * Discord 전송 가능한 1900자 이하 청크 배열로 반환합니다.
- *
- * @param {string|null} aiSummary   - 핵심 3줄 요약 텍스트
- * @param {string|null} aiAnalysis  - 전체 트렌드 분석 텍스트 (by Gemini)
- * @param {Object[]}    rawItems    - 수집된 트렌드 항목 배열
- * @returns {string[]} Discord 메시지 청크 배열
- */
-function formatAndChunkMessage(aiSummary, aiAnalysis, rawItems) {
-  const dateStr = getKstDateString();
-
-  const parts = [];
-
-  // ── 헤더 ──────────────────────────────────────────────
-  parts.push(`📡 TrendLens — ${dateStr}\n${SEPARATOR}`);
-
-  // ── 핵심 요약 ─────────────────────────────────────────
-  if (aiSummary) {
-    parts.push(`🔥 오늘의 핵심 3줄 요약\n${aiSummary}`);
-    parts.push(SEPARATOR);
-  }
-
-  // ── 소스별 항목 ───────────────────────────────────────
-  const bySource = {
-    hackernews: [],
-    reddit: [],
-    github: [],
-    huggingface: [],
-  };
-
-  for (const item of rawItems ?? []) {
-    if (bySource[item.source]) {
-      bySource[item.source].push(item);
-    }
-  }
-
-  const hn = renderHackerNews(bySource.hackernews);
-  const reddit = renderReddit(bySource.reddit);
-  const github = renderGitHub(bySource.github);
-  const hf = renderHuggingFace(bySource.huggingface);
-
-  if (hn) parts.push(hn);
-  if (reddit) parts.push(reddit);
-  if (github) parts.push(github);
-  if (hf) parts.push(hf);
-
-  // ── AI 분석 ───────────────────────────────────────────
-  if (aiAnalysis) {
-    const analysisText = Array.isArray(aiAnalysis) ? aiAnalysis.join('\n') : aiAnalysis;
-    parts.push(SEPARATOR);
-    parts.push(`🤖 AI 트렌드 분석 (by Gemini)\n${analysisText}`);
-  }
-
-  const fullText = parts.join('\n\n');
-  return chunkText(fullText);
-}
-
 module.exports = {
   formatTrendMessage,
   formatSummarizeReport,
   formatStatusMessage,
-  formatAndChunkMessage,
   chunkText,
-  truncateSummary,
+  getKstDateString,
+  getKstIsoDate,
 };

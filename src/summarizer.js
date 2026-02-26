@@ -2,7 +2,6 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const logger = require('./logger');
 
 const MODEL_NAME = 'gemini-3-flash-preview';
-const MAX_INPUT_ITEMS = 20;
 const MAX_URL_TEXT_LEN = 10_000;
 
 function buildTrendPrompt(items, language) {
