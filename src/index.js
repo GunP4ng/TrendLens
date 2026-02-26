@@ -35,7 +35,7 @@ const commands = [
     .addStringOption((o) => o.setName('date').setDescription('조회 날짜 (YYYY-MM-DD)').setRequired(false)),
   new SlashCommandBuilder()
     .setName('source')
-    .setDescription('특정 소스만 조회')
+    .setDescription('특정 소스 조회 또는 URL 요약')
     .addStringOption((o) =>
       o.setName('name').setDescription('소스').setRequired(true)
         .addChoices(
@@ -43,7 +43,9 @@ const commands = [
           { name: 'Reddit', value: 'reddit' },
           { name: 'GitHub', value: 'github' },
           { name: 'HuggingFace', value: 'huggingface' },
-        )),
+        ))
+    .addStringOption((o) =>
+      o.setName('url').setDescription('요약할 URL (입력 시 해당 페이지 분석 리포트 생성)').setRequired(false)),
   new SlashCommandBuilder()
     .setName('apikey')
     .setDescription('Gemini API 키 관리')
@@ -53,10 +55,6 @@ const commands = [
   new SlashCommandBuilder().setName('status').setDescription('봇 상태 확인'),
   new SlashCommandBuilder().setName('logs').setDescription('최근 로그 조회 (관리자 전용)'),
   new SlashCommandBuilder().setName('quota').setDescription('Gemini API 사용량 확인'),
-  new SlashCommandBuilder()
-    .setName('summarize')
-    .setDescription('URL 상세 리포트 생성')
-    .addStringOption((o) => o.setName('url').setDescription('분석할 URL').setRequired(true)),
   new SlashCommandBuilder()
     .setName('config')
     .setDescription('봇 설정 변경 (관리자 전용)')
@@ -138,7 +136,7 @@ async function isSafeUrl(urlString) {
 // Cooldown
 // ──────────────────────────────────────────────
 
-const COOLDOWN_COMMANDS = new Set(['trend', 'source', 'summarize']);
+const COOLDOWN_COMMANDS = new Set(['trend', 'source']);
 
 function checkCooldown(userId, commandName) {
   if (!COOLDOWN_COMMANDS.has(commandName)) return null;
@@ -313,11 +311,26 @@ async function handleTrend(interaction) {
 
 async function handleSource(interaction) {
   const sourceName = interaction.options.getString('name');
+  const urlStr = interaction.options.getString('url');
   const userId = interaction.user.id;
+
+  // URL이 주어진 경우: API 키 및 URL 유효성 사전 검사
+  if (urlStr) {
+    if (!keyStore.hasKey(userId)) {
+      return interaction.reply({ content: '🔑 URL 요약을 사용하려면 /apikey set으로 Gemini API 키를 등록해주세요.', ephemeral: true });
+    }
+    if (keyStore.isQuotaExceeded(userId)) {
+      return interaction.reply({ content: '⚠️ Gemini API 일일 한도에 도달했습니다. 내일 재시도해주세요.', ephemeral: true });
+    }
+    if (!/^https?:\/\//i.test(urlStr)) {
+      return interaction.reply({ content: '🔗 유효한 URL을 입력해주세요. (http:// 또는 https://)', ephemeral: true });
+    }
+  }
 
   await interaction.deferReply();
 
   try {
+    // ── 소스 트렌드 목록 출력 ──────────────────────────────
     const fetcherFileMap = { hackernews: 'hackernews', reddit: 'reddit', github: 'github-trending', huggingface: 'huggingface' };
     const fetcher = require(`./fetchers/${fetcherFileMap[sourceName]}`);
     const fetchOpts = {};
@@ -333,7 +346,46 @@ async function handleSource(interaction) {
       if (i === 0) await interaction.editReply(msgOpts);
       else await interaction.channel.send(msgOpts);
     }
+
+    // ── URL 요약 리포트 (선택) ─────────────────────────────
+    if (urlStr) {
+      const safe = await isSafeUrl(urlStr);
+      if (!safe) {
+        await interaction.followUp({ content: '🔒 내부 네트워크 주소는 접근할 수 없습니다.', ephemeral: true });
+        return;
+      }
+
+      const { extract } = require('@extractus/article-extractor');
+      const article = await extract(urlStr);
+
+      if (!article || !article.content) {
+        await interaction.followUp({ content: '📄 페이지 본문을 추출할 수 없습니다. 다른 URL을 시도해주세요.', ephemeral: true });
+        return;
+      }
+
+      const text = article.content.replace(/<[^>]+>/g, '').slice(0, 10_000);
+      const apiKey = keyStore.getKey(userId);
+      const report = await summarizer.summarizeUrl(text, apiKey, config.get('language'));
+
+      keyStore.incrementUsage(userId, '/source url');
+
+      const reportMessages = formatter.formatSummarizeReport(report);
+      for (const msg of reportMessages) {
+        await interaction.channel.send({ content: msg, flags: MessageFlags.SuppressEmbeds });
+      }
+
+      const warnLevel = keyStore.getQuotaWarningLevel(userId);
+      if (warnLevel === 'warning') {
+        const u = keyStore.getUsage(userId);
+        await interaction.followUp({ content: `⚠️ 오늘 Gemini API 사용량 80% 도달 (${u.count}/${config.get('geminiRpd')} RPD)`, ephemeral: true });
+      } else if (warnLevel === 'exceeded') {
+        await interaction.followUp({ content: '⚠️ Gemini API 일일 한도에 도달했습니다. 내일 재시도해주세요.', ephemeral: true });
+      }
+    }
   } catch (err) {
+    if (err.code === 'QUOTA_EXCEEDED') {
+      return interaction.editReply('⚠️ Gemini API 일일 한도에 도달했습니다. 내일 재시도해주세요.');
+    }
     logger.error(`/source ${sourceName} 실패: ${err.message}`);
     await interaction.editReply(`❌ ${sourceName} 수집에 실패했습니다: ${err.message}`);
   }
@@ -353,7 +405,7 @@ async function handleApiKey(interaction) {
     }
 
     keyStore.setKey(userId, apiKeyVal);
-    return interaction.editReply('✅ Gemini API 키가 등록되었습니다. /trend, /summarize 명령어를 사용할 수 있습니다.');
+    return interaction.editReply('✅ Gemini API 키가 등록되었습니다. /trend, /source url 명령어를 사용할 수 있습니다.');
   }
 
   if (sub === 'status') {
@@ -432,66 +484,6 @@ async function handleQuota(interaction) {
     content: `📊 내 Gemini API 사용량 (오늘)\n• 호출: ${u.count} / ${rpd} RPD\n• 잔여: ${remaining}회\n• 마지막 호출: ${lastCall}`,
     ephemeral: true,
   });
-}
-
-async function handleSummarize(interaction) {
-  const userId = interaction.user.id;
-  const urlStr = interaction.options.getString('url');
-
-  if (!keyStore.hasKey(userId)) {
-    return interaction.reply({ content: '🔑 /summarize를 사용하려면 /apikey set으로 API 키를 등록해주세요.', ephemeral: true });
-  }
-
-  if (keyStore.isQuotaExceeded(userId)) {
-    return interaction.reply({ content: '⚠️ Gemini API 일일 한도에 도달했습니다. 내일 재시도해주세요.', ephemeral: true });
-  }
-
-  if (!/^https?:\/\//i.test(urlStr)) {
-    return interaction.reply({ content: '🔗 유효한 URL을 입력해주세요. (http:// 또는 https://)', ephemeral: true });
-  }
-
-  await interaction.deferReply();
-
-  try {
-    const safe = await isSafeUrl(urlStr);
-    if (!safe) {
-      return interaction.editReply('🔒 내부 네트워크 주소는 접근할 수 없습니다.');
-    }
-
-    const { extract } = require('@extractus/article-extractor');
-    const article = await extract(urlStr);
-
-    if (!article || !article.content) {
-      return interaction.editReply('📄 페이지 본문을 추출할 수 없습니다. 다른 URL을 시도해주세요.');
-    }
-
-    const text = article.content.replace(/<[^>]+>/g, '').slice(0, 10_000);
-    const apiKey = keyStore.getKey(userId);
-    const report = await summarizer.summarizeUrl(text, apiKey, config.get('language'));
-
-    keyStore.incrementUsage(userId, '/summarize');
-
-    const messages = formatter.formatSummarizeReport(report);
-    for (let i = 0; i < messages.length; i++) {
-      const msgOpts = { content: messages[i], flags: MessageFlags.SuppressEmbeds };
-      if (i === 0) await interaction.editReply(msgOpts);
-      else await interaction.channel.send(msgOpts);
-    }
-
-    const warnLevel = keyStore.getQuotaWarningLevel(userId);
-    if (warnLevel === 'warning') {
-      const u = keyStore.getUsage(userId);
-      await interaction.followUp({ content: `⚠️ 오늘 Gemini API 사용량 80% 도달 (${u.count}/${config.get('geminiRpd')} RPD)`, ephemeral: true });
-    } else if (warnLevel === 'exceeded') {
-      await interaction.followUp({ content: '⚠️ Gemini API 일일 한도에 도달했습니다. 내일 재시도해주세요.', ephemeral: true });
-    }
-  } catch (err) {
-    if (err.code === 'QUOTA_EXCEEDED') {
-      return interaction.editReply('⚠️ Gemini API 일일 한도에 도달했습니다. 내일 재시도해주세요.');
-    }
-    logger.error(`/summarize 실패: ${err.message}`);
-    await interaction.editReply(`🔗 해당 URL에 접근할 수 없습니다: ${err.message}`);
-  }
 }
 
 async function handleConfig(interaction) {
@@ -636,8 +628,8 @@ async function handleHelp(interaction) {
     '`/reddit status` — 인증 상태 확인',
     '`/reddit remove` — 인증 해제',
     '',
-    '**🔍 분석**',
-    '`/summarize <url>` — URL의 상세 한국어 리포트 생성',
+    '**🔍 URL 분석**',
+    '`/source <소스> url:<URL>` — 소스 조회 + 해당 URL 상세 리포트 생성 (API 키 필요)',
     '',
     '**📊 모니터링**',
     '`/status` — 봇 상태 (핑, 업타임, 채널 등)',
@@ -670,7 +662,6 @@ const handlers = {
   status: handleStatus,
   logs: handleLogs,
   quota: handleQuota,
-  summarize: handleSummarize,
   config: handleConfig,
   reddit: handleReddit,
   help: handleHelp,
