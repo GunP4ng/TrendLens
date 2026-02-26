@@ -14,8 +14,8 @@
 | 기능 | 설명 |
 |------|------|
 | **멀티 소스 수집** | HackerNews · Reddit · GitHub Trending · HuggingFace Papers 4곳에서 최신 트렌드를 동시 수집 |
-| **AI 한국어 요약** | 사용자별 Gemini API 키로 핵심 3줄 요약 + 트렌드 분석을 한국어로 생성 |
-| **자동 스케줄링** | `node-cron` 기반 매일 정해진 시간에 설정 채널로 자동 전송 |
+| **AI 한국어 요약** | 사용자별 Gemini API 키로 핵심 3줄 요약 + 트렌드 분석을 한국어로 생성 (키가 없으면 요약 생략 안내 전송) |
+| **자동 스케줄링** | `node-cron` 기반 매일 정해진 시간에 진행 메시지를 먼저 전송하고 완료 시 첫 결과로 편집 |
 | **슬래시 명령어** | Discord 네이티브 `/` 명령어로 온디맨드 조회 및 봇 설정 관리 |
 | **개인 Reddit OAuth** | 사용자별 Reddit 계정 로그인으로 개인화된 피드 수집 |
 | **SSRF 방어** | IPv4/IPv6, A/AAAA, IP literal 검사로 내부망 접근 차단 |
@@ -28,7 +28,7 @@
 
 - **Node.js** 18 이상
 - **Discord Bot Token** + **Guild ID** ([Discord Developer Portal](https://discord.com/developers/applications))
-- _(선택)_ **Gemini API Key** — 사용자별 `/apikey set` 명령어로 등록
+- _(선택)_ **Gemini API Key** — 사용자별 `/apikey set` 명령어로 등록 (미등록 시 자동 알림은 링크 중심 결과 + 요약 생략 안내)
 - _(선택)_ **Reddit OAuth Credentials** — `client_id`, `client_secret`, `refresh_token`
 
 ---
@@ -227,6 +227,25 @@ node -e "require('./src/fetchers/github-trending').fetch().then(r => console.log
 - GitHub Actions: `.github/workflows/ci.yml`
 - 트리거: `main`, `master` 브랜치 push 및 모든 Pull Request
 - 실행 항목: `npm ci` → `npm run build`
+
+## Git Workflow (preview -> main)
+
+- `main`에는 직접 commit 하지 않습니다.
+- 모든 변경은 `preview`에서 commit 하고 `main`은 fast-forward merge로만 반영합니다.
+
+```bash
+# 1) 작업 브랜치에서 커밋
+git switch preview
+git add README.md src/index.js src/keyStore.js tests/keyStore.test.js
+git commit -m "docs(readme): reflect scheduler behavior and preview-main workflow"
+git push -u origin preview
+
+# 2) main은 ff-only로 반영
+git switch main
+git pull --ff-only origin main
+git merge --ff-only preview
+git push origin main
+```
 
 ---
 

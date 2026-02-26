@@ -180,12 +180,33 @@ function getAnyKey() {
   return null;
 }
 
+function getAnyUsableKey() {
+  const rpd = config.get('geminiRpd') || 50;
+  const candidates = [];
+
+  for (const [userId, key] of keys.entries()) {
+    const entry = getUsageEntry(userId);
+    if (entry.count < rpd) {
+      candidates.push({ key, count: entry.count, lastUsedAt: entry.lastUsedAt || '' });
+    }
+  }
+
+  if (candidates.length === 0) return null;
+
+  candidates.sort((a, b) => {
+    if (a.count !== b.count) return a.count - b.count;
+    return String(b.lastUsedAt).localeCompare(String(a.lastUsedAt));
+  });
+
+  return candidates[0].key;
+}
+
 function getKeyCount() {
   return keys.size;
 }
 
 module.exports = {
-  setKey, getKey, removeKey, hasKey, getKeyPreview, getAnyKey, getKeyCount,
+  setKey, getKey, removeKey, hasKey, getKeyPreview, getAnyKey, getAnyUsableKey, getKeyCount,
   setReddit, getReddit, removeReddit, hasReddit, getRedditPreview, getAnyRedditCredentials,
   incrementUsage, getUsage, isQuotaExceeded, getQuotaWarningLevel,
   resetDailyUsage, restoreFromDisk, hashUserId,

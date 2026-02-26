@@ -790,30 +790,47 @@ function startCron() {
   cronJob = cron.schedule(toCronExpr(timeStr), async () => {
     if (isRunning) return;
     isRunning = true;
+    let progressMessage = null;
     try {
       const channelId = config.get('channel');
       if (!channelId) {
         logger.warn('스케줄 실행 생략: 전송 채널 미설정 (/config channel로 설정해주세요)');
         return;
       }
+      const channel = await client.channels.fetch(channelId).catch(() => null);
+      if (!channel) {
+        logger.warn(`스케줄 전송 실패: 채널 ${channelId}을 찾을 수 없습니다`);
+        return;
+      }
+      progressMessage = await channel.send(safeContent(`🔄 자동 트렌드 수집을 시작합니다. (설정 시간: ${timeStr} KST)`));
+
       const cronRedditCred = keyStore.getAnyRedditCredentials();
-      const cronApiKey = keyStore.getAnyKey();
+      const cronApiKey = keyStore.getAnyUsableKey() || keyStore.getAnyKey();
       const result = await runPipeline({ sources: config.get('sources'), apiKey: cronApiKey, redditCredentials: cronRedditCred });
       lastPipelineRun = new Date().toISOString();
-      const channel = await client.channels.fetch(channelId).catch(() => null);
-      if (channel) {
-        for (const msg of result.messages) {
-          await channel.send(safePayload({ content: msg, flags: MessageFlags.SuppressEmbeds }));
+
+      if (result.messages.length > 0) {
+        await progressMessage.edit(safePayload({ content: result.messages[0], flags: MessageFlags.SuppressEmbeds }));
+        for (let i = 1; i < result.messages.length; i++) {
+          await channel.send(safePayload({ content: result.messages[i], flags: MessageFlags.SuppressEmbeds }));
         }
       } else {
-        logger.warn(`스케줄 전송 실패: 채널 ${channelId}을 찾을 수 없습니다`);
+        await progressMessage.edit(safeContent('📭 자동 트렌드 수집 결과가 없습니다.'));
+      }
+
+      if (!result.meta?.gemini_used && result.meta?.gemini_skip_reason === 'no_personal_key') {
+        await channel.send(safeContent('ℹ️ 자동 알림은 Gemini API 키가 없어 AI 한국어 요약이 생략되었습니다. /apikey set으로 키를 등록하면 /trend와 동일한 요약 형식으로 전송됩니다.'));
       }
     } catch (err) {
       logger.error(`스케줄 실행 실패: ${err.message}`);
       try {
-        const channelId = config.get('channel');
-        const channel = channelId ? await client.channels.fetch(channelId).catch(() => null) : null;
-        if (channel) await channel.send(safeContent(`❌ 자동 트렌드 수집에 실패했습니다: ${err.message}`));
+        if (progressMessage) {
+          await progressMessage.edit(safeContent(`❌ 자동 트렌드 수집에 실패했습니다: ${err.message}`));
+        } else {
+          const channelId = config.get('channel');
+          const channel = channelId ? await client.channels.fetch(channelId).catch(() => null) : null;
+          if (channel) await channel.send(safeContent(`❌ 자동 트렌드 수집에 실패했습니다: ${err.message}`));
+        }
       } catch { /* ignore */ }
     } finally {
       isRunning = false;

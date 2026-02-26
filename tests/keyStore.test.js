@@ -1,4 +1,4 @@
-/* globals: describe, it, expect, beforeEach, vi */
+/* globals: describe, it, expect, beforeEach, afterEach, vi */
 
 vi.mock('../src/config', () => ({
   get: vi.fn((key) => {
@@ -19,10 +19,20 @@ const keyStore = require('../src/keyStore');
 
 const TEST_USER = 'test-user-' + Date.now();
 let userCounter = 0;
+const createdUsers = [];
 
 function uniqueUser() {
-  return `${TEST_USER}-${++userCounter}`;
+  const userId = `${TEST_USER}-${++userCounter}`;
+  createdUsers.push(userId);
+  return userId;
 }
+
+afterEach(() => {
+  for (const userId of createdUsers.splice(0)) {
+    keyStore.removeKey(userId);
+    keyStore.removeReddit(userId);
+  }
+});
 
 describe('KeyStore', () => {
   it('키 등록/조회/삭제', () => {
@@ -75,6 +85,36 @@ describe('KeyStore', () => {
       keyStore.incrementUsage(userId, '/trend');
     }
     expect(keyStore.getQuotaWarningLevel(userId)).toBe('exceeded');
+  });
+
+  it('getAnyUsableKey는 쿼터 미초과 키를 우선 선택', () => {
+    const exceededUser = uniqueUser();
+    const availableUser = uniqueUser();
+
+    keyStore.setKey(exceededUser, 'key-exceeded');
+    keyStore.setKey(availableUser, 'key-available');
+
+    for (let i = 0; i < 50; i++) {
+      keyStore.incrementUsage(exceededUser, '/trend');
+    }
+
+    expect(keyStore.isQuotaExceeded(exceededUser)).toBe(true);
+    expect(keyStore.getAnyUsableKey()).toBe('key-available');
+  });
+
+  it('getAnyUsableKey는 모든 키가 한도 초과면 null 반환', () => {
+    const userA = uniqueUser();
+    const userB = uniqueUser();
+
+    keyStore.setKey(userA, 'key-a');
+    keyStore.setKey(userB, 'key-b');
+
+    for (let i = 0; i < 50; i++) {
+      keyStore.incrementUsage(userA, '/trend');
+      keyStore.incrementUsage(userB, '/trend');
+    }
+
+    expect(keyStore.getAnyUsableKey()).toBeNull();
   });
 
   it('userId 해시 일관성 및 길이', () => {
