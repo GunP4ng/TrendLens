@@ -1,4 +1,4 @@
-const { formatTrendMessage, formatSourceMessage, formatSummarizeReport, formatStatusMessage, formatAndChunkMessage, chunkText, truncateSummary } = require('../src/formatter');
+const { formatTrendMessage, formatSummarizeReport, formatStatusMessage, formatAndChunkMessage, chunkText, truncateSummary } = require('../src/formatter');
 
 describe('formatTrendMessage', () => {
   const mockItems = [
@@ -160,36 +160,6 @@ describe('formatTrendMessage', () => {
   });
 });
 
-describe('formatSourceMessage', () => {
-  it('빈 결과 시 배열로 안내 메시지 반환', () => {
-    const result = formatSourceMessage([], 'hackernews');
-    expect(Array.isArray(result)).toBe(true);
-    expect(result[0]).toContain('수집 결과 없음');
-  });
-
-  it('HackerNews 결과 포맷', () => {
-    const items = [{ title: 'Test', url: 'https://test.com', source: 'hackernews', score: 10, summary: null, createdAt: new Date(), metadata: {} }];
-    const result = formatSourceMessage(items, 'hackernews');
-    expect(Array.isArray(result)).toBe(true);
-    expect(result[0]).toContain('HackerNews (1건)');
-    expect(result[0]).toContain('[10pt] Test');
-    expect(result[0]).toContain('<https://test.com>');
-  });
-
-  it('GitHub 결과는 설명 포함', () => {
-    const items = [{ title: 'user/repo', url: 'https://github.com/user/repo', source: 'github', score: 100, summary: 'Test repo', createdAt: new Date(), metadata: { stars: 100 } }];
-    const result = formatSourceMessage(items, 'github');
-    expect(result[0]).toContain('📦 user/repo (★ 100)');
-    expect(result[0]).toContain('↳ ✨ Test repo');
-  });
-
-  it('HuggingFace 결과는 설명 포함', () => {
-    const items = [{ title: 'Paper Title', url: 'https://hf.co/papers/123', source: 'huggingface', score: 50, summary: 'Abstract text', createdAt: new Date(), metadata: { upvotes: 50 } }];
-    const result = formatSourceMessage(items, 'huggingface');
-    expect(result[0]).toContain('📜 Paper Title (↑ 50)');
-    expect(result[0]).toContain('↳ 💡 Abstract text');
-  });
-});
 
 describe('formatSummarizeReport', () => {
   it('리포트 포맷 반환', () => {

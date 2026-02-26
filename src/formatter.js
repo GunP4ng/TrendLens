@@ -198,56 +198,6 @@ function formatTrendMessage(items, parsedData, dateStr) {
 }
 
 /**
- * 단일 소스 메시지 포맷팅
- */
-function formatSourceMessage(items, sourceName) {
-  if (!items || items.length === 0) {
-    return [`📡 **${sourceName}** — 수집 결과 없음`];
-  }
-
-  const sourceLabels = {
-    hackernews: 'HackerNews',
-    reddit: 'Reddit',
-    github: 'GitHub Trending',
-    huggingface: 'HuggingFace Papers',
-  };
-  const label = sourceLabels[sourceName] || sourceName;
-
-  let fullText = `📡 **${label} (${items.length}건)**\n${SEPARATOR}\n\n`;
-
-  if (sourceName === 'hackernews') {
-    items.forEach(item => {
-      fullText += `[${item.score}pt] ${item.title}\n<${item.url}>\n\n`;
-    });
-  } else if (sourceName === 'reddit') {
-    items.forEach(item => {
-      const sub = item.metadata?.subreddit || 'unknown';
-      fullText += `[r/${sub}] ${item.title}\n<${item.url}>\n\n`;
-    });
-  } else if (sourceName === 'github') {
-    items.forEach(item => {
-      const stars = item.metadata?.stars ?? item.score;
-      fullText += `📦 ${item.title} (★ ${stars})\n<${item.url}>\n`;
-      if (item.summary) fullText += `↳ ✨ ${item.summary}\n`;
-      fullText += `\n`;
-    });
-  } else if (sourceName === 'huggingface') {
-    items.forEach(item => {
-      const upvotes = item.metadata?.upvotes ?? item.score;
-      fullText += `📜 ${item.title} (↑ ${upvotes})\n<${item.url}>\n`;
-      if (item.summary) fullText += `↳ 💡 ${item.summary}\n`;
-      fullText += `\n`;
-    });
-  } else {
-    items.forEach(item => {
-      fullText += `• ${item.title}\n<${item.url}>\n\n`;
-    });
-  }
-
-  return chunkText(fullText.trimEnd());
-}
-
-/**
  * URL 분석 리포트 포맷팅
  */
 function formatSummarizeReport(report) {
@@ -387,7 +337,6 @@ function formatAndChunkMessage(aiSummary, aiAnalysis, rawItems) {
 
 module.exports = {
   formatTrendMessage,
-  formatSourceMessage,
   formatSummarizeReport,
   formatStatusMessage,
   formatAndChunkMessage,

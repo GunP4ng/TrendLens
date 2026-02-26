@@ -35,17 +35,9 @@ const commands = [
     .addStringOption((o) => o.setName('date').setDescription('조회 날짜 (YYYY-MM-DD)').setRequired(false)),
   new SlashCommandBuilder()
     .setName('source')
-    .setDescription('특정 소스 조회 또는 URL 요약')
+    .setDescription('URL 분석 리포트 생성')
     .addStringOption((o) =>
-      o.setName('name').setDescription('소스').setRequired(true)
-        .addChoices(
-          { name: 'HackerNews', value: 'hackernews' },
-          { name: 'Reddit', value: 'reddit' },
-          { name: 'GitHub', value: 'github' },
-          { name: 'HuggingFace', value: 'huggingface' },
-        ))
-    .addStringOption((o) =>
-      o.setName('url').setDescription('요약할 URL (입력 시 해당 페이지 분석 리포트 생성)').setRequired(false)),
+      o.setName('url').setDescription('요약할 URL').setRequired(true)),
   new SlashCommandBuilder()
     .setName('apikey')
     .setDescription('Gemini API 키 관리')
@@ -310,84 +302,60 @@ async function handleTrend(interaction) {
 }
 
 async function handleSource(interaction) {
-  const sourceName = interaction.options.getString('name');
   const urlStr = interaction.options.getString('url');
   const userId = interaction.user.id;
 
-  // URL이 주어진 경우: API 키 및 URL 유효성 사전 검사
-  if (urlStr) {
-    if (!keyStore.hasKey(userId)) {
-      return interaction.reply({ content: '🔑 URL 요약을 사용하려면 /apikey set으로 Gemini API 키를 등록해주세요.', ephemeral: true });
-    }
-    if (keyStore.isQuotaExceeded(userId)) {
-      return interaction.reply({ content: '⚠️ Gemini API 일일 한도에 도달했습니다. 내일 재시도해주세요.', ephemeral: true });
-    }
-    if (!/^https?:\/\//i.test(urlStr)) {
-      return interaction.reply({ content: '🔗 유효한 URL을 입력해주세요. (http:// 또는 https://)', ephemeral: true });
-    }
+  if (!keyStore.hasKey(userId)) {
+    return interaction.reply({ content: '🔑 URL 요약을 사용하려면 /apikey set으로 Gemini API 키를 등록해주세요.', ephemeral: true });
+  }
+  if (keyStore.isQuotaExceeded(userId)) {
+    return interaction.reply({ content: '⚠️ Gemini API 일일 한도에 도달했습니다. 내일 재시도해주세요.', ephemeral: true });
+  }
+  if (!/^https?:\/\//i.test(urlStr)) {
+    return interaction.reply({ content: '🔗 유효한 URL을 입력해주세요. (http:// 또는 https://)', ephemeral: true });
   }
 
   await interaction.deferReply();
 
   try {
-    // ── 소스 트렌드 목록 출력 ──────────────────────────────
-    const fetcherFileMap = { hackernews: 'hackernews', reddit: 'reddit', github: 'github-trending', huggingface: 'huggingface' };
-    const fetcher = require(`./fetchers/${fetcherFileMap[sourceName]}`);
-    const fetchOpts = {};
-    if (sourceName === 'reddit') {
-      const redditCred = keyStore.getReddit(userId);
-      if (redditCred) fetchOpts.credentials = redditCred;
+    const safe = await isSafeUrl(urlStr);
+    if (!safe) {
+      return interaction.editReply('🔒 내부 네트워크 주소는 접근할 수 없습니다.');
     }
-    const items = await fetcher.fetch(fetchOpts);
-    const messages = formatter.formatSourceMessage(items, sourceName);
 
-    for (let i = 0; i < messages.length; i++) {
-      const msgOpts = { content: messages[i], flags: MessageFlags.SuppressEmbeds };
+    const { extract } = require('@extractus/article-extractor');
+    const article = await extract(urlStr);
+
+    if (!article || !article.content) {
+      return interaction.editReply('📄 페이지 본문을 추출할 수 없습니다. 다른 URL을 시도해주세요.');
+    }
+
+    const text = article.content.replace(/<[^>]+>/g, '').slice(0, 10_000);
+    const apiKey = keyStore.getKey(userId);
+    const report = await summarizer.summarizeUrl(text, apiKey, config.get('language'));
+
+    keyStore.incrementUsage(userId, '/source');
+
+    const reportMessages = formatter.formatSummarizeReport(report);
+    for (let i = 0; i < reportMessages.length; i++) {
+      const msgOpts = { content: reportMessages[i], flags: MessageFlags.SuppressEmbeds };
       if (i === 0) await interaction.editReply(msgOpts);
       else await interaction.channel.send(msgOpts);
     }
 
-    // ── URL 요약 리포트 (선택) ─────────────────────────────
-    if (urlStr) {
-      const safe = await isSafeUrl(urlStr);
-      if (!safe) {
-        await interaction.followUp({ content: '🔒 내부 네트워크 주소는 접근할 수 없습니다.', ephemeral: true });
-        return;
-      }
-
-      const { extract } = require('@extractus/article-extractor');
-      const article = await extract(urlStr);
-
-      if (!article || !article.content) {
-        await interaction.followUp({ content: '📄 페이지 본문을 추출할 수 없습니다. 다른 URL을 시도해주세요.', ephemeral: true });
-        return;
-      }
-
-      const text = article.content.replace(/<[^>]+>/g, '').slice(0, 10_000);
-      const apiKey = keyStore.getKey(userId);
-      const report = await summarizer.summarizeUrl(text, apiKey, config.get('language'));
-
-      keyStore.incrementUsage(userId, '/source url');
-
-      const reportMessages = formatter.formatSummarizeReport(report);
-      for (const msg of reportMessages) {
-        await interaction.channel.send({ content: msg, flags: MessageFlags.SuppressEmbeds });
-      }
-
-      const warnLevel = keyStore.getQuotaWarningLevel(userId);
-      if (warnLevel === 'warning') {
-        const u = keyStore.getUsage(userId);
-        await interaction.followUp({ content: `⚠️ 오늘 Gemini API 사용량 80% 도달 (${u.count}/${config.get('geminiRpd')} RPD)`, ephemeral: true });
-      } else if (warnLevel === 'exceeded') {
-        await interaction.followUp({ content: '⚠️ Gemini API 일일 한도에 도달했습니다. 내일 재시도해주세요.', ephemeral: true });
-      }
+    const warnLevel = keyStore.getQuotaWarningLevel(userId);
+    if (warnLevel === 'warning') {
+      const u = keyStore.getUsage(userId);
+      await interaction.followUp({ content: `⚠️ 오늘 Gemini API 사용량 80% 도달 (${u.count}/${config.get('geminiRpd')} RPD)`, ephemeral: true });
+    } else if (warnLevel === 'exceeded') {
+      await interaction.followUp({ content: '⚠️ Gemini API 일일 한도에 도달했습니다. 내일 재시도해주세요.', ephemeral: true });
     }
   } catch (err) {
     if (err.code === 'QUOTA_EXCEEDED') {
       return interaction.editReply('⚠️ Gemini API 일일 한도에 도달했습니다. 내일 재시도해주세요.');
     }
-    logger.error(`/source ${sourceName} 실패: ${err.message}`);
-    await interaction.editReply(`❌ ${sourceName} 수집에 실패했습니다: ${err.message}`);
+    logger.error(`/source 실패: ${err.message}`);
+    await interaction.editReply(`❌ URL 분석에 실패했습니다: ${err.message}`);
   }
 }
 
@@ -405,7 +373,7 @@ async function handleApiKey(interaction) {
     }
 
     keyStore.setKey(userId, apiKeyVal);
-    return interaction.editReply('✅ Gemini API 키가 등록되었습니다. /trend, /source url 명령어를 사용할 수 있습니다.');
+    return interaction.editReply('✅ Gemini API 키가 등록되었습니다. /trend, /source 명령어를 사용할 수 있습니다.');
   }
 
   if (sub === 'status') {
@@ -585,7 +553,7 @@ async function handleReddit(interaction) {
       }
 
       keyStore.setReddit(userId, clientId, clientSecret);
-      return interaction.editReply('✅ Reddit OAuth 인증이 등록되었습니다. /trend, /source reddit 명령어에서 안정적인 수집이 가능합니다.');
+      return interaction.editReply('✅ Reddit OAuth 인증이 등록되었습니다. /trend 명령어에서 안정적인 수집이 가능합니다.');
     } catch (err) {
       logger.warn(`[Reddit] OAuth 검증 실패: ${err.message}`);
       return interaction.editReply(`❌ Reddit 인증 검증 중 오류: ${err.message}`);
@@ -616,7 +584,7 @@ async function handleHelp(interaction) {
     '',
     '**🔥 트렌드**',
     '`/trend [date]` — 전체 소스 트렌드 수집 + AI 요약',
-    '`/source <name>` — 특정 소스(HN/Reddit/GitHub/HF)만 조회',
+    '`/source <url>` — URL 상세 분석 리포트 생성 (API 키 필요)',
     '',
     '**🔑 API 키 관리**',
     '`/apikey set <key>` — Gemini API 키 등록',
@@ -627,9 +595,6 @@ async function handleHelp(interaction) {
     '`/reddit login <id> <secret>` — 내 Reddit OAuth 등록',
     '`/reddit status` — 인증 상태 확인',
     '`/reddit remove` — 인증 해제',
-    '',
-    '**🔍 URL 분석**',
-    '`/source <소스> url:<URL>` — 소스 조회 + 해당 URL 상세 리포트 생성 (API 키 필요)',
     '',
     '**📊 모니터링**',
     '`/status` — 봇 상태 (핑, 업타임, 채널 등)',
