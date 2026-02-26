@@ -1,4 +1,16 @@
 require('dotenv').config();
+
+// ──────────────────────────────────────────────
+// 필수 환경변수 검증 (시작 시 즉시 실패)
+// ──────────────────────────────────────────────
+const REQUIRED_ENV = ['DISCORD_BOT_TOKEN', 'DISCORD_GUILD_ID'];
+for (const key of REQUIRED_ENV) {
+  if (!process.env[key]) {
+    console.error(`[Fatal] 필수 환경변수 ${key}가 설정되지 않았습니다. .env 파일을 확인해주세요.`);
+    process.exit(1);
+  }
+}
+
 const {
   Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder,
   PermissionFlagsBits, AttachmentBuilder, ChannelType, MessageFlags, Events,
@@ -15,14 +27,51 @@ const keyStore = require('./keyStore');
 const { runPipeline } = require('./pipeline');
 const summarizer = require('./summarizer');
 const formatter = require('./formatter');
+const { getKstIsoDate } = formatter;
 
 const LOGS_DIR = path.join(__dirname, '..', 'logs');
 const BOT_START_TIME = Date.now();
 let lastPipelineRun = null;
 let isRunning = false;
 let cronJob = null;
+let dailyResetCronJob = null;
 
 const cooldowns = new Map();
+const SAFE_ALLOWED_MENTIONS = { parse: [] };
+const URL_EXTRACT_TIMEOUT_MS = 10_000;
+
+function safePayload(payload = {}) {
+  return { ...payload, allowedMentions: SAFE_ALLOWED_MENTIONS };
+}
+
+function safeContent(content, extra = {}) {
+  return safePayload({ content, ...extra });
+}
+
+async function withTimeout(promise, ms, errorMessage) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(errorMessage)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+// cooldowns Map에서 만료된 항목을 정리하는 함수 (메모리 누수 방지)
+function cleanupCooldowns() {
+  const now = Date.now();
+  const cdMs = (config.get('cooldown') || 300) * 1000;
+  for (const [userId, lastUsed] of cooldowns.entries()) {
+    if (now - lastUsed >= cdMs) {
+      cooldowns.delete(userId);
+    }
+  }
+}
 
 // ──────────────────────────────────────────────
 // Slash Command Definitions
@@ -117,8 +166,24 @@ function isPrivateIP(ip) {
 async function isSafeUrl(urlString) {
   try {
     const { hostname } = new URL(urlString);
-    const { address } = await dns.promises.lookup(hostname);
-    return !isPrivateIP(address);
+
+    if (net.isIP(hostname)) {
+      return !isPrivateIP(hostname);
+    }
+
+    const [aRecords, aaaaRecords] = await Promise.all([
+      dns.promises.resolve4(hostname).catch(() => []),
+      dns.promises.resolve6(hostname).catch(() => []),
+    ]);
+
+    let allRecords = [...aRecords, ...aaaaRecords];
+    if (allRecords.length === 0) {
+      const lookedUp = await dns.promises.lookup(hostname, { all: true }).catch(() => []);
+      allRecords = lookedUp.map((entry) => entry.address);
+    }
+
+    if (allRecords.length === 0) return false;
+    return allRecords.every((addr) => !isPrivateIP(addr));
   } catch {
     return false;
   }
@@ -159,8 +224,7 @@ function validateDate(dateStr) {
     return { valid: false, error: '📅 날짜 형식이 올바르지 않습니다. 예: 2026-02-25' };
   }
 
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
+  const today = new Date(`${getKstIsoDate()}T00:00:00Z`);
 
   if (d.getTime() > today.getTime()) {
     return { valid: false, error: '📅 미래 날짜는 조회할 수 없습니다. 오늘 또는 과거 날짜를 입력해주세요.' };
@@ -204,10 +268,17 @@ function cleanupOldLogs(retentionDays = 30) {
     if (!fs.existsSync(LOGS_DIR)) return;
     const cutoff = Date.now() - retentionDays * 86_400_000;
     const patterns = [/^result_(.+)\.json$/, /^gemini_usage_(.+)\.json$/];
+    const parseLogDate = (raw) => {
+      const normalized = raw.replace(/\./g, '-');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return null;
+      const ts = new Date(`${normalized}T00:00:00Z`).getTime();
+      return Number.isNaN(ts) ? null : ts;
+    };
     for (const file of fs.readdirSync(LOGS_DIR)) {
       for (const re of patterns) {
         const match = file.match(re);
-        if (match && new Date(match[1]).getTime() < cutoff) {
+        const fileTime = match ? parseLogDate(match[1]) : null;
+        if (fileTime && fileTime < cutoff) {
           try { fs.unlinkSync(path.join(LOGS_DIR, file)); } catch { /* ignore */ }
         }
       }
@@ -248,20 +319,21 @@ async function handleTrend(interaction) {
 
   if (dateOpt) {
     const v = validateDate(dateOpt);
-    if (!v.valid) return interaction.reply({ content: v.error, ephemeral: true });
+    if (!v.valid) return interaction.reply(safePayload({ content: v.error, ephemeral: true }));
   }
 
   if (isRunning) {
-    return interaction.reply({ content: '🔄 현재 트렌드 수집이 진행 중입니다. 완료 후 다시 시도해주세요.', ephemeral: true });
+    return interaction.reply(safePayload({ content: '🔄 현재 트렌드 수집이 진행 중입니다. 완료 후 다시 시도해주세요.', ephemeral: true }));
   }
 
-  await interaction.deferReply();
-
+  // isRunning을 deferReply 이전에 설정하여 레이스 컨디션 방지
   isRunning = true;
   try {
+    await interaction.deferReply();
+
     const apiKey = keyStore.getKey(userId);
     const date = dateOpt || undefined;
-    const todayKst = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const todayKst = getKstIsoDate();
     const isPast = !!dateOpt && dateOpt < todayKst;
 
     const sources = isPast
@@ -273,30 +345,36 @@ async function handleTrend(interaction) {
     lastPipelineRun = new Date().toISOString();
 
     for (let i = 0; i < result.messages.length; i++) {
-      const msgOpts = { content: result.messages[i], flags: MessageFlags.SuppressEmbeds };
+      const msgOpts = safePayload({ content: result.messages[i], flags: MessageFlags.SuppressEmbeds });
       if (i === 0) await interaction.editReply(msgOpts);
       else await interaction.channel.send(msgOpts);
     }
 
     if (isPast) {
-      await interaction.followUp('ℹ️ Reddit, GitHub Trending은 과거 날짜 조회를 지원하지 않아 생략되었습니다.');
+      await interaction.followUp(safeContent('ℹ️ Reddit, GitHub Trending은 과거 날짜 조회를 지원하지 않아 생략되었습니다.'));
     }
 
     if (!apiKey) {
-      await interaction.followUp('🔑 Gemini 요약을 사용하려면 /apikey set으로 API 키를 등록해주세요.');
+      await interaction.followUp(safeContent('🔑 Gemini 요약을 사용하려면 /apikey set으로 API 키를 등록해주세요.'));
     } else {
       keyStore.incrementUsage(userId, '/trend');
       const warnLevel = keyStore.getQuotaWarningLevel(userId);
       if (warnLevel === 'warning') {
         const u = keyStore.getUsage(userId);
-        await interaction.followUp({ content: `⚠️ 오늘 Gemini API 사용량 80% 도달 (${u.count}/${config.get('geminiRpd')} RPD)`, ephemeral: true });
+        await interaction.followUp(safePayload({ content: `⚠️ 오늘 Gemini API 사용량 80% 도달 (${u.count}/${config.get('geminiRpd')} RPD)`, ephemeral: true }));
       } else if (warnLevel === 'exceeded') {
-        await interaction.followUp({ content: '⚠️ Gemini API 일일 한도에 도달했습니다. 내일 재시도해주세요.', ephemeral: true });
+        await interaction.followUp(safePayload({ content: '⚠️ Gemini API 일일 한도에 도달했습니다. 내일 재시도해주세요.', ephemeral: true }));
       }
     }
   } catch (err) {
     logger.error(`/trend 실패: ${err.message}`);
-    await interaction.editReply(`❌ 트렌드 수집에 실패했습니다: ${err.message}`);
+    try {
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply(safeContent(`❌ 트렌드 수집에 실패했습니다: ${err.message}`));
+      } else {
+        await interaction.reply(safePayload({ content: `❌ 트렌드 수집에 실패했습니다: ${err.message}`, ephemeral: true }));
+      }
+    } catch { /* ignore response error */ }
   } finally {
     isRunning = false;
   }
@@ -307,13 +385,13 @@ async function handleSource(interaction) {
   const userId = interaction.user.id;
 
   if (!keyStore.hasKey(userId)) {
-    return interaction.reply({ content: '🔑 URL 요약을 사용하려면 /apikey set으로 Gemini API 키를 등록해주세요.', ephemeral: true });
+    return interaction.reply(safePayload({ content: '🔑 URL 요약을 사용하려면 /apikey set으로 Gemini API 키를 등록해주세요.', ephemeral: true }));
   }
   if (keyStore.isQuotaExceeded(userId)) {
-    return interaction.reply({ content: '⚠️ Gemini API 일일 한도에 도달했습니다. 내일 재시도해주세요.', ephemeral: true });
+    return interaction.reply(safePayload({ content: '⚠️ Gemini API 일일 한도에 도달했습니다. 내일 재시도해주세요.', ephemeral: true }));
   }
   if (!/^https?:\/\//i.test(urlStr)) {
-    return interaction.reply({ content: '🔗 유효한 URL을 입력해주세요. (http:// 또는 https://)', ephemeral: true });
+    return interaction.reply(safePayload({ content: '🔗 유효한 URL을 입력해주세요. (http:// 또는 https://)', ephemeral: true }));
   }
 
   await interaction.deferReply();
@@ -321,14 +399,14 @@ async function handleSource(interaction) {
   try {
     const safe = await isSafeUrl(urlStr);
     if (!safe) {
-      return interaction.editReply('🔒 내부 네트워크 주소는 접근할 수 없습니다.');
+      return interaction.editReply(safeContent('🔒 내부 네트워크 주소는 접근할 수 없습니다.'));
     }
 
     const { extract } = require('@extractus/article-extractor');
-    const article = await extract(urlStr);
+    const article = await withTimeout(extract(urlStr), URL_EXTRACT_TIMEOUT_MS, 'URL 본문 추출 시간 초과');
 
     if (!article || !article.content) {
-      return interaction.editReply('📄 페이지 본문을 추출할 수 없습니다. 다른 URL을 시도해주세요.');
+      return interaction.editReply(safeContent('📄 페이지 본문을 추출할 수 없습니다. 다른 URL을 시도해주세요.'));
     }
 
     const text = article.content.replace(/<[^>]+>/g, '').slice(0, 10_000);
@@ -339,7 +417,7 @@ async function handleSource(interaction) {
 
     const reportMessages = formatter.formatSummarizeReport(report);
     for (let i = 0; i < reportMessages.length; i++) {
-      const msgOpts = { content: reportMessages[i], flags: MessageFlags.SuppressEmbeds };
+      const msgOpts = safePayload({ content: reportMessages[i], flags: MessageFlags.SuppressEmbeds });
       if (i === 0) await interaction.editReply(msgOpts);
       else await interaction.channel.send(msgOpts);
     }
@@ -347,16 +425,16 @@ async function handleSource(interaction) {
     const warnLevel = keyStore.getQuotaWarningLevel(userId);
     if (warnLevel === 'warning') {
       const u = keyStore.getUsage(userId);
-      await interaction.followUp({ content: `⚠️ 오늘 Gemini API 사용량 80% 도달 (${u.count}/${config.get('geminiRpd')} RPD)`, ephemeral: true });
+      await interaction.followUp(safePayload({ content: `⚠️ 오늘 Gemini API 사용량 80% 도달 (${u.count}/${config.get('geminiRpd')} RPD)`, ephemeral: true }));
     } else if (warnLevel === 'exceeded') {
-      await interaction.followUp({ content: '⚠️ Gemini API 일일 한도에 도달했습니다. 내일 재시도해주세요.', ephemeral: true });
+      await interaction.followUp(safePayload({ content: '⚠️ Gemini API 일일 한도에 도달했습니다. 내일 재시도해주세요.', ephemeral: true }));
     }
   } catch (err) {
     if (err.code === 'QUOTA_EXCEEDED') {
-      return interaction.editReply('⚠️ Gemini API 일일 한도에 도달했습니다. 내일 재시도해주세요.');
+      return interaction.editReply(safeContent('⚠️ Gemini API 일일 한도에 도달했습니다. 내일 재시도해주세요.'));
     }
     logger.error(`/source 실패: ${err.message}`);
-    await interaction.editReply(`❌ URL 분석에 실패했습니다: ${err.message}`);
+    await interaction.editReply(safeContent(`❌ URL 분석에 실패했습니다: ${err.message}`));
   }
 }
 
@@ -370,11 +448,11 @@ async function handleApiKey(interaction) {
 
     const valid = await summarizer.validateKey(apiKeyVal);
     if (!valid) {
-      return interaction.editReply('❌ 유효하지 않은 API 키입니다. AI Studio에서 키를 확인해주세요.');
+      return interaction.editReply(safeContent('❌ 유효하지 않은 API 키입니다. AI Studio에서 키를 확인해주세요.'));
     }
 
     keyStore.setKey(userId, apiKeyVal);
-    return interaction.editReply('✅ Gemini API 키가 등록되었습니다. /trend, /source 명령어를 사용할 수 있습니다.');
+    return interaction.editReply(safeContent('✅ Gemini API 키가 등록되었습니다. /trend, /source 명령어를 사용할 수 있습니다.'));
   }
 
   if (sub === 'status') {
@@ -383,16 +461,16 @@ async function handleApiKey(interaction) {
       const preview = keyStore.getKeyPreview(userId);
       const lastUsed = u.lastUsedAt ? new Date(u.lastUsedAt).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit' }) + ' KST' : '없음';
       const lastCmd = u.lastCommand || '';
-      return interaction.reply({ content: `🔑 API 키 등록됨 | 마지막 사용: ${lastUsed} (${lastCmd}) | 키: ${preview}`, ephemeral: true });
+      return interaction.reply(safePayload({ content: `🔑 API 키 등록됨 | 마지막 사용: ${lastUsed} (${lastCmd}) | 키: ${preview}`, ephemeral: true }));
     }
-    return interaction.reply({ content: '🔑 API 키 미등록 | /apikey set으로 등록해주세요.', ephemeral: true });
+    return interaction.reply(safePayload({ content: '🔑 API 키 미등록 | /apikey set으로 등록해주세요.', ephemeral: true }));
   }
 
   if (sub === 'remove') {
     if (keyStore.removeKey(userId)) {
-      return interaction.reply({ content: '🗑️ API 키가 삭제되었습니다.', ephemeral: true });
+      return interaction.reply(safePayload({ content: '🗑️ API 키가 삭제되었습니다.', ephemeral: true }));
     }
-    return interaction.reply({ content: '🔑 등록된 API 키가 없습니다.', ephemeral: true });
+    return interaction.reply(safePayload({ content: '🔑 등록된 API 키가 없습니다.', ephemeral: true }));
   }
 }
 
@@ -413,33 +491,33 @@ async function handleStatus(interaction) {
     uptime,
     lastRun: lastPipelineRun || '없음',
     activeSources: activeSources || '없음',
-    keyCount: 0,
+    keyCount: keyStore.getKeyCount(),
     channel: channelStatus,
   });
-  return interaction.reply(msg);
+  return interaction.reply(safeContent(msg));
 }
 
 async function handleLogs(interaction) {
   if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-    return interaction.reply({ content: '🔒 관리자만 사용할 수 있는 명령어입니다.', ephemeral: true });
+    return interaction.reply(safePayload({ content: '🔒 관리자만 사용할 수 있는 명령어입니다.', ephemeral: true }));
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getKstIsoDate();
   const filePath = path.join(LOGS_DIR, `result_${today}.json`);
 
   if (!fs.existsSync(filePath)) {
-    return interaction.reply({ content: '📭 오늘의 로그가 없습니다.', ephemeral: true });
+    return interaction.reply(safePayload({ content: '📭 오늘의 로그가 없습니다.', ephemeral: true }));
   }
 
   const attachment = new AttachmentBuilder(filePath, { name: `result_${today}.json` });
-  return interaction.reply({ files: [attachment] });
+  return interaction.reply(safePayload({ files: [attachment] }));
 }
 
 async function handleQuota(interaction) {
   const userId = interaction.user.id;
 
   if (!keyStore.hasKey(userId)) {
-    return interaction.reply({ content: '🔑 API 키가 등록되지 않았습니다. /apikey set으로 등록해주세요.', ephemeral: true });
+    return interaction.reply(safePayload({ content: '🔑 API 키가 등록되지 않았습니다. /apikey set으로 등록해주세요.', ephemeral: true }));
   }
 
   const u = keyStore.getUsage(userId);
@@ -449,15 +527,15 @@ async function handleQuota(interaction) {
     ? new Date(u.lastUsedAt).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit' }) + ` KST (${u.lastCommand})`
     : '없음';
 
-  return interaction.reply({
+  return interaction.reply(safePayload({
     content: `📊 내 Gemini API 사용량 (오늘)\n• 호출: ${u.count} / ${rpd} RPD\n• 잔여: ${remaining}회\n• 마지막 호출: ${lastCall}`,
     ephemeral: true,
-  });
+  }));
 }
 
 async function handleConfig(interaction) {
   if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-    return interaction.reply({ content: '🔒 관리자만 사용할 수 있는 명령어입니다.', ephemeral: true });
+    return interaction.reply(safePayload({ content: '🔒 관리자만 사용할 수 있는 명령어입니다.', ephemeral: true }));
   }
 
   const sub = interaction.options.getSubcommand();
@@ -466,23 +544,23 @@ async function handleConfig(interaction) {
     case 'time': {
       const value = interaction.options.getString('value');
       if (!/^\d{2}:\d{2}$/.test(value)) {
-        return interaction.reply({ content: '⚙️ HH:MM 형식으로 입력해주세요. (예: 09:00)', ephemeral: true });
+        return interaction.reply(safePayload({ content: '⚙️ HH:MM 형식으로 입력해주세요. (예: 09:00)', ephemeral: true }));
       }
       const [h, m] = value.split(':').map(Number);
       if (h < 0 || h > 23 || m < 0 || m > 59) {
-        return interaction.reply({ content: '⚙️ 시간: 00-23, 분: 00-59 범위로 입력해주세요.', ephemeral: true });
+        return interaction.reply(safePayload({ content: '⚙️ 시간: 00-23, 분: 00-59 범위로 입력해주세요.', ephemeral: true }));
       }
       const oldVal = config.get('time');
       config.set('time', value);
       restartCron();
-      return interaction.reply(`⚙️ 설정 변경 완료: time ${oldVal} → ${value}`);
+      return interaction.reply(safeContent(`⚙️ 설정 변경 완료: time ${oldVal} → ${value}`));
     }
 
     case 'channel': {
       const ch = interaction.options.getChannel('target');
       const oldCh = config.get('channel');
       config.set('channel', ch.id);
-      return interaction.reply(`⚙️ 전송 채널 설정 완료: ${oldCh ? `<#${oldCh}>` : '(미설정)'} → <#${ch.id}>`);
+      return interaction.reply(safeContent(`⚙️ 전송 채널 설정 완료: ${oldCh ? `<#${oldCh}>` : '(미설정)'} → <#${ch.id}>`));
     }
 
     case 'sources': {
@@ -492,32 +570,32 @@ async function handleConfig(interaction) {
       const oldState = sources[srcName] ? 'on' : 'off';
       sources[srcName] = toggle === 'on';
       config.set('sources', sources);
-      return interaction.reply(`⚙️ 설정 변경 완료: ${srcName} ${oldState} → ${toggle}`);
+      return interaction.reply(safeContent(`⚙️ 설정 변경 완료: ${srcName} ${oldState} → ${toggle}`));
     }
 
     case 'cooldown': {
       const seconds = interaction.options.getInteger('seconds');
       const oldCd = config.get('cooldown');
       config.set('cooldown', seconds);
-      return interaction.reply(`⚙️ 설정 변경 완료: cooldown ${oldCd} → ${seconds}초`);
+      return interaction.reply(safeContent(`⚙️ 설정 변경 완료: cooldown ${oldCd} → ${seconds}초`));
     }
 
     case 'language': {
       const lang = interaction.options.getString('lang');
       const oldLang = config.get('language');
       config.set('language', lang);
-      return interaction.reply(`⚙️ 설정 변경 완료: language ${oldLang} → ${lang}`);
+      return interaction.reply(safeContent(`⚙️ 설정 변경 완료: language ${oldLang} → ${lang}`));
     }
 
     case 'gemini_rpd': {
       const limit = interaction.options.getInteger('limit');
       const oldRpd = config.get('geminiRpd');
       config.set('geminiRpd', limit);
-      return interaction.reply(`⚙️ 설정 변경 완료: gemini_rpd ${oldRpd} → ${limit}`);
+      return interaction.reply(safeContent(`⚙️ 설정 변경 완료: gemini_rpd ${oldRpd} → ${limit}`));
     }
 
     default:
-      return interaction.reply({ content: '⚙️ 알 수 없는 설정 항목입니다.', ephemeral: true });
+      return interaction.reply(safePayload({ content: '⚙️ 알 수 없는 설정 항목입니다.', ephemeral: true }));
   }
 }
 
@@ -545,35 +623,35 @@ async function handleReddit(interaction) {
       });
 
       if (!res.ok) {
-        return interaction.editReply('❌ Reddit 인증 실패: Client ID 또는 Secret이 올바르지 않습니다.');
+        return interaction.editReply(safeContent('❌ Reddit 인증 실패: Client ID 또는 Secret이 올바르지 않습니다.'));
       }
 
       const data = await res.json();
       if (!data.access_token) {
-        return interaction.editReply('❌ Reddit 인증 실패: 토큰을 발급받지 못했습니다.');
+        return interaction.editReply(safeContent('❌ Reddit 인증 실패: 토큰을 발급받지 못했습니다.'));
       }
 
       keyStore.setReddit(userId, clientId, clientSecret);
-      return interaction.editReply('✅ Reddit OAuth 인증이 등록되었습니다. /trend 명령어에서 안정적인 수집이 가능합니다.');
+      return interaction.editReply(safeContent('✅ Reddit OAuth 인증이 등록되었습니다. /trend 명령어에서 안정적인 수집이 가능합니다.'));
     } catch (err) {
       logger.warn(`[Reddit] OAuth 검증 실패: ${err.message}`);
-      return interaction.editReply(`❌ Reddit 인증 검증 중 오류: ${err.message}`);
+      return interaction.editReply(safeContent(`❌ Reddit 인증 검증 중 오류: ${err.message}`));
     }
   }
 
   if (sub === 'status') {
     if (keyStore.hasReddit(userId)) {
       const preview = keyStore.getRedditPreview(userId);
-      return interaction.reply({ content: `🔗 Reddit OAuth 등록됨 | Client ID: ${preview}`, ephemeral: true });
+      return interaction.reply(safePayload({ content: `🔗 Reddit OAuth 등록됨 | Client ID: ${preview}`, ephemeral: true }));
     }
-    return interaction.reply({ content: '🔗 Reddit OAuth 미등록 | `/reddit login`으로 등록해주세요.\n비인증 모드에서도 동작하지만 429 차단 가능성이 있습니다.', ephemeral: true });
+    return interaction.reply(safePayload({ content: '🔗 Reddit OAuth 미등록 | `/reddit login`으로 등록해주세요.\n비인증 모드에서도 동작하지만 429 차단 가능성이 있습니다.', ephemeral: true }));
   }
 
   if (sub === 'remove') {
     if (keyStore.removeReddit(userId)) {
-      return interaction.reply({ content: '🗑️ Reddit OAuth 인증이 해제되었습니다.', ephemeral: true });
+      return interaction.reply(safePayload({ content: '🗑️ Reddit OAuth 인증이 해제되었습니다.', ephemeral: true }));
     }
-    return interaction.reply({ content: '🔗 등록된 Reddit 인증이 없습니다.', ephemeral: true });
+    return interaction.reply(safePayload({ content: '🔗 등록된 Reddit 인증이 없습니다.', ephemeral: true }));
   }
 }
 
@@ -614,7 +692,7 @@ async function handleHelp(interaction) {
     '💡 처음 사용 시: `/config channel` → `/apikey set` → `/trend`',
   ].join('\n');
 
-  return interaction.reply({ content: text, ephemeral: true });
+  return interaction.reply(safePayload({ content: text, ephemeral: true }));
 }
 
 // ──────────────────────────────────────────────
@@ -661,9 +739,9 @@ client.once(Events.ClientReady, async () => {
     try {
       const channelId = config.get('channel');
       if (channelId) {
-        const ch = client.channels.cache.get(channelId);
+        const ch = await client.channels.fetch(channelId).catch(() => null);
         if (ch) {
-          await ch.send('🔄 봇이 재시작되었습니다. API 키를 등록하신 분은 /apikey set으로 재등록해주세요.');
+          await ch.send(safeContent('🔄 봇이 재시작되었습니다. API 키를 등록하신 분은 /apikey set으로 재등록해주세요.'));
         }
       }
     } catch (err) {
@@ -672,6 +750,7 @@ client.once(Events.ClientReady, async () => {
   }
 
   startCron();
+  startDailyResetCron();
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -682,7 +761,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   const cdRemaining = checkCooldown(userId, cmdName);
   if (cdRemaining !== null) {
-    return interaction.reply({ content: `⏳ 쿨다운 중입니다. ${cdRemaining}초 후 다시 시도해주세요.`, ephemeral: true });
+    return interaction.reply(safePayload({ content: `⏳ 쿨다운 중입니다. ${cdRemaining}초 후 다시 시도해주세요.`, ephemeral: true }));
   }
 
   const handler = handlers[cmdName];
@@ -693,9 +772,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
       logger.error(`[${cmdName}] 처리 실패: ${err.message}`);
       try {
         if (interaction.deferred || interaction.replied) {
-          await interaction.editReply(`❌ 오류가 발생했습니다: ${err.message}`);
+          await interaction.editReply(safeContent(`❌ 오류가 발생했습니다: ${err.message}`));
         } else {
-          await interaction.reply({ content: `❌ 오류가 발생했습니다: ${err.message}`, ephemeral: true });
+          await interaction.reply(safePayload({ content: `❌ 오류가 발생했습니다: ${err.message}`, ephemeral: true }));
         }
       } catch { /* ignore response error */ }
     }
@@ -721,10 +800,10 @@ function startCron() {
       const cronApiKey = keyStore.getAnyKey();
       const result = await runPipeline({ sources: config.get('sources'), apiKey: cronApiKey, redditCredentials: cronRedditCred });
       lastPipelineRun = new Date().toISOString();
-      const channel = client.channels.cache.get(channelId);
+      const channel = await client.channels.fetch(channelId).catch(() => null);
       if (channel) {
         for (const msg of result.messages) {
-          await channel.send({ content: msg, flags: MessageFlags.SuppressEmbeds });
+          await channel.send(safePayload({ content: msg, flags: MessageFlags.SuppressEmbeds }));
         }
       } else {
         logger.warn(`스케줄 전송 실패: 채널 ${channelId}을 찾을 수 없습니다`);
@@ -733,8 +812,8 @@ function startCron() {
       logger.error(`스케줄 실행 실패: ${err.message}`);
       try {
         const channelId = config.get('channel');
-        const channel = channelId && client.channels.cache.get(channelId);
-        if (channel) await channel.send(`❌ 자동 트렌드 수집에 실패했습니다: ${err.message}`);
+        const channel = channelId ? await client.channels.fetch(channelId).catch(() => null) : null;
+        if (channel) await channel.send(safeContent(`❌ 자동 트렌드 수집에 실패했습니다: ${err.message}`));
       } catch { /* ignore */ }
     } finally {
       isRunning = false;
@@ -742,10 +821,15 @@ function startCron() {
   }, { timezone: 'Asia/Seoul' });
 
   logger.info(`Cron 스케줄러 시작: ${timeStr} KST`);
+}
 
-  cron.schedule('0 0 * * *', () => {
+function startDailyResetCron() {
+  // 일일 리셋 크론은 봇 시작 시 1회만 등록 (restartCron에서 재등록하지 않음)
+  if (dailyResetCronJob) return;
+  dailyResetCronJob = cron.schedule('0 0 * * *', () => {
     keyStore.resetDailyUsage();
     cleanupOldLogs();
+    cleanupCooldowns();
   }, { timezone: 'UTC' });
 }
 
@@ -756,6 +840,25 @@ function restartCron() {
   }
   startCron();
 }
+
+// ──────────────────────────────────────────────
+// Graceful Shutdown
+// ──────────────────────────────────────────────
+
+async function shutdown(signal) {
+  logger.info(`${signal} 수신 — 봇 종료 중...`);
+  try {
+    if (cronJob) { cronJob.stop(); }
+    if (dailyResetCronJob) { dailyResetCronJob.stop(); }
+    client.destroy();
+  } catch (err) {
+    logger.warn(`종료 처리 중 오류: ${err.message}`);
+  }
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 // ──────────────────────────────────────────────
 // Start

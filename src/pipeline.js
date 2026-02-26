@@ -1,6 +1,7 @@
 const config = require('./config');
 const logger = require('./logger');
 const formatter = require('./formatter');
+const { getKstIsoDate } = formatter;
 const fs = require('node:fs');
 const path = require('node:path');
 const { normalizeUrl, dedup: dedupCore } = require('./urlUtils');
@@ -102,7 +103,7 @@ async function runPipeline({ date, sources, userId, apiKey, redditCredentials } 
     logger.info(`[Pipeline] aiSummary 매핑: ${mapped}/${topByScore.length}건`);
   }
 
-  const dateStr = date || new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const dateStr = date || getKstIsoDate();
   const messages = formatter.formatTrendMessage(allItems, parsedData, dateStr);
 
   const meta = {

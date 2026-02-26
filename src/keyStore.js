@@ -5,12 +5,11 @@ const config = require('./config');
 const logger = require('./logger');
 
 const SALT = process.env.USAGE_SALT || 'trendlens-usage-salt-v1';
-const LOGS_DIR = path.join(__dirname, 'logs');
+const LOGS_DIR = path.join(__dirname, '..', 'logs');
 
 const keys = new Map();
 const redditCredentials = new Map();
 const usage = new Map();
-const restartNotified = new Set();
 let diskUsageCache = null;
 
 function hashUserId(userId) {
@@ -123,7 +122,7 @@ function getQuotaWarningLevel(userId) {
 }
 
 function resetDailyUsage() {
-  for (const [userId, entry] of usage.entries()) {
+  for (const [, entry] of usage.entries()) {
     entry.count = 0;
     entry.lastUsedAt = null;
     entry.lastCommand = null;
@@ -142,12 +141,6 @@ function restoreFromDisk() {
   } catch (err) {
     logger.warn(`[KeyStore] 디스크 복원 실패: ${err.message}`);
   }
-}
-
-function shouldNotifyRestart(userId) {
-  if (restartNotified.has(userId)) return false;
-  restartNotified.add(userId);
-  return true;
 }
 
 function setReddit(userId, clientId, clientSecret) {
@@ -187,9 +180,13 @@ function getAnyKey() {
   return null;
 }
 
+function getKeyCount() {
+  return keys.size;
+}
+
 module.exports = {
-  setKey, getKey, removeKey, hasKey, getKeyPreview, getAnyKey,
+  setKey, getKey, removeKey, hasKey, getKeyPreview, getAnyKey, getKeyCount,
   setReddit, getReddit, removeReddit, hasReddit, getRedditPreview, getAnyRedditCredentials,
   incrementUsage, getUsage, isQuotaExceeded, getQuotaWarningLevel,
-  resetDailyUsage, restoreFromDisk, shouldNotifyRestart, hashUserId,
+  resetDailyUsage, restoreFromDisk, hashUserId,
 };
