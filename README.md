@@ -143,7 +143,7 @@ trendlens/
 ├── .env.example
 ├── eslint.config.cjs
 ├── package.json
-└── vitest.config.js
+└── vitest.config.mjs
 ```
 
 ---
