@@ -3,7 +3,7 @@ module.exports = [
     ignores: ['node_modules/**', 'logs/**', '.Aegis/**'],
   },
   {
-    files: ['src/**/*.js', 'tests/**/*.js', 'vitest.config.js'],
+    files: ['src/**/*.js', 'tests/**/*.js'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'commonjs',
@@ -30,6 +30,13 @@ module.exports = [
         it: 'readonly',
         vi: 'readonly',
       },
+    },
+  },
+  {
+    files: ['vitest.config.mjs'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
     },
   },
 ];
