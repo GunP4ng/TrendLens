@@ -1,5 +1,6 @@
 node_modules/
 .env
 .Aegis/
-config_override.json
+.sisyphus/
+data/
 logs/

@@ -13,11 +13,13 @@
 
 | 기능 | 설명 |
 |------|------|
+| **멀티 서버 지원** | 여러 Discord 서버에 동시 설치 가능. 서버별 독립적인 채널·소스·API 키 관리 |
+| **서버 공유 API 키** | 서버 관리자가 Gemini API 키를 한 번만 등록하면 서버 모든 멤버가 AI 요약 기능을 사용 |
 | **멀티 소스 수집** | HackerNews · Reddit · GitHub Trending · HuggingFace Papers 4곳에서 최신 트렌드를 동시 수집 |
-| **AI 한국어 요약** | 사용자별 Gemini API 키로 핵심 3줄 요약 + 트렌드 분석을 한국어로 생성 (키가 없으면 요약 생략 안내 전송) |
-| **자동 스케줄링** | `node-cron` 기반 매일 정해진 시간에 진행 메시지를 먼저 전송하고 완료 시 첫 결과로 편집 |
+| **AI 한국어 요약** | 서버 Gemini API 키로 핵심 3줄 요약 + 트렌드 분석을 한국어로 생성 (키 없으면 요약 생략 안내) |
+| **자동 스케줄링** | `node-cron` 기반 서버별 매일 정해진 시간에 트렌드 자동 전송 |
 | **슬래시 명령어** | Discord 네이티브 `/` 명령어로 온디맨드 조회 및 봇 설정 관리 |
-| **개인 Reddit OAuth** | 사용자별 Reddit 계정 로그인으로 개인화된 피드 수집 |
+| **서버 Reddit OAuth** | 서버 단위 Reddit OAuth 등록으로 안정적인 수집 (관리자 등록) |
 | **SSRF 방어** | IPv4/IPv6, A/AAAA, IP literal 검사로 내부망 접근 차단 |
 | **멘션 안전화** | 외부 콘텐츠 전송 시 `allowedMentions` 차단으로 무분별한 ping 방지 |
 | **품질 게이트** | `lint + typecheck + test` 빌드 검증 및 GitHub Actions CI 제공 |
@@ -27,9 +29,11 @@
 ## Prerequisites
 
 - **Node.js** 18 이상
-- **Discord Bot Token** + **Guild ID** ([Discord Developer Portal](https://discord.com/developers/applications))
-- _(선택)_ **Gemini API Key** — 사용자별 `/apikey set` 명령어로 등록 (미등록 시 자동 알림은 링크 중심 결과 + 요약 생략 안내)
-- _(선택)_ **Reddit OAuth Credentials** — `client_id`, `client_secret`, `refresh_token`
+- **Discord Bot Token** ([Discord Developer Portal](https://discord.com/developers/applications))
+  - OAuth2 스코프: `bot`, `applications.commands` 필수
+  - 봇 권한: `Send Messages`, `Read Message History`
+- _(선택)_ **Gemini API Key** — 서버 관리자가 `/apikey set`으로 등록. 미등록 시 링크 중심 결과 + 요약 생략 안내
+- _(선택)_ **Reddit OAuth Credentials** — 서버 관리자가 `/reddit login`으로 등록. 미등록 시 비인증 모드로 동작
 
 ---
 
@@ -45,19 +49,21 @@ npm install
 
 # 3. 환경변수 설정
 cp .env.example .env
-# .env 파일을 편집하여 DISCORD_BOT_TOKEN, DISCORD_GUILD_ID 입력
+# .env 파일을 편집하여 DISCORD_BOT_TOKEN 입력
 
 # 4. 봇 실행
 npm start
 ```
 
-봇이 실행되면 Discord 서버에서 아래 순서로 초기 설정합니다:
+봇이 실행되면 Discord 서버에서 아래 순서로 초기 설정합니다 **(관리자 계정 필요)**:
 
 ```
 /config channel #채널-이름   → 트렌드 수신 채널 지정
-/apikey set <Gemini-API-키>  → 개인 Gemini API 키 등록
+/apikey set <Gemini-API-키>  → 서버 Gemini API 키 등록 (관리자 전용)
 /trend                        → 즉시 트렌드 조회 테스트
 ```
+
+API 키 등록 후에는 **서버 전체 멤버**가 `/trend`, `/source` 명령어를 사용할 수 있습니다.
 
 ---
 
@@ -67,25 +73,25 @@ npm start
 
 | 명령어 | 설명 |
 |--------|------|
-| `/trend` | 전체 소스 최신 트렌드 즉시 조회 (AI 요약 포함, API 키 필요) |
+| `/trend` | 전체 소스 최신 트렌드 즉시 조회 (AI 요약 포함, 서버 API 키 필요) |
 | `/trend date:<YYYY-MM-DD>` | 특정 날짜 트렌드 조회 |
-| `/source url:<URL>` | URL 단건 AI 분석 리포트 생성 (API 키 필요) |
+| `/source url:<URL>` | URL 단건 AI 분석 리포트 생성 (서버 API 키 필요) |
 
 ### API 키 관리
 
-| 명령어 | 설명 |
-|--------|------|
-| `/apikey set <key>` | Gemini API 키 등록 (본인에게만 보이는 응답) |
-| `/apikey status` | 등록된 키 상태 및 사용량 확인 |
-| `/apikey remove` | 등록된 키 삭제 |
+| 명령어 | 권한 | 설명 |
+|--------|:----:|------|
+| `/apikey set <key>` | 관리자 | 서버 Gemini API 키 등록. 이 서버 모든 멤버가 사용 |
+| `/apikey status` | 전체 | 서버 키 등록 상태 및 오늘 사용량 확인 |
+| `/apikey remove` | 관리자 | 서버 API 키 삭제 |
 
 ### Reddit 인증
 
-| 명령어 | 설명 |
-|--------|------|
-| `/reddit login <client_id> <client_secret>` | Reddit OAuth 자격증명 등록 |
-| `/reddit status` | 인증 상태 확인 |
-| `/reddit remove` | 인증 정보 삭제 |
+| 명령어 | 권한 | 설명 |
+|--------|:----:|------|
+| `/reddit login <client_id> <client_secret>` | 관리자 | 서버 Reddit OAuth 자격증명 등록 |
+| `/reddit status` | 전체 | 서버 인증 상태 확인 |
+| `/reddit remove` | 관리자 | 서버 인증 정보 삭제 |
 
 ### 봇 설정 (관리자 전용)
 
@@ -104,7 +110,7 @@ npm start
 |--------|------|
 | `/help` | 전체 명령어 목록 및 사용법 |
 | `/status` | 봇 상태, 업타임, 채널, 소스 설정 요약 |
-| `/quota` | 내 Gemini API 일일 사용량 확인 |
+| `/quota` | 서버 Gemini API 오늘 사용량 확인 |
 | `/logs` | 오늘의 실행 로그 조회 (관리자 전용, KST 기준 파일) |
 
 ---
@@ -116,8 +122,8 @@ trendlens/
 ├── src/
 │   ├── index.js            # 봇 진입점, Discord 이벤트 & 명령어 핸들러
 │   ├── pipeline.js         # 수집 → 정규화 → 중복제거 → 요약 파이프라인
-│   ├── config.js           # 설정 로드 & config_override.json 영속화
-│   ├── keyStore.js         # Gemini API 키 & Reddit OAuth 인메모리 저장소
+│   ├── config.js           # 서버별 설정 (data/guild_configs/{guildId}.json)
+│   ├── keyStore.js         # 서버별 Gemini API 키 & Reddit OAuth 인메모리 저장소
 │   ├── summarizer.js       # Gemini API 호출 & 프롬프트 빌더
 │   ├── formatter.js        # Discord 메시지 포맷터
 │   ├── urlUtils.js         # URL 정규화 & 중복 제거 유틸
@@ -139,6 +145,8 @@ trendlens/
 │       └── ci.yml            # lint/typecheck/test 자동 검증
 ├── deploy/
 │   └── trendlens.service   # systemd 서비스 유닛 파일
+├── data/                   # 런타임 서버별 설정 (gitignore)
+│   └── guild_configs/      # {guildId}.json — 서버별 채널, 소스, 스케줄 등
 ├── logs/                   # 런타임 로그 & Gemini 사용량 (gitignore)
 ├── .env.example
 ├── eslint.config.cjs
@@ -155,11 +163,11 @@ trendlens/
 | 변수 | 필수 | 설명 |
 |------|:----:|------|
 | `DISCORD_BOT_TOKEN` | ✅ | Discord 봇 토큰 |
-| `DISCORD_GUILD_ID` | ✅ | 슬래시 명령어를 등록할 서버 ID |
+| `DISCORD_GUILD_ID` | ❌ | 개발용: 특정 서버에만 명령어 등록 (즉시 반영). 생략 시 전역 등록 (최대 1시간 전파) |
 
 ### 런타임 설정 (`/config` 명령어)
 
-런타임 설정은 `config_override.json`에 자동 저장되어 봇 재시작 후에도 유지됩니다.
+런타임 설정은 `data/guild_configs/{guildId}.json`에 서버별로 자동 저장되어 봇 재시작 후에도 유지됩니다.
 
 | 설정 | 기본값 | 설명 |
 |------|--------|------|
@@ -168,7 +176,7 @@ trendlens/
 | `sources` | 전체 활성 | 수집 소스별 활성화 여부 (hackernews/reddit/github/huggingface) |
 | `cooldown` | `300` | 명령어 쿨다운 (초) |
 | `language` | `ko` | 요약 언어 (`ko` / `en`) |
-| `geminiRpd` | `50` | 사용자별 Gemini API 일일 요청 한도 |
+| `geminiRpd` | `50` | 서버별 Gemini API 일일 요청 한도 |
 
 ---
 
@@ -192,6 +200,15 @@ sudo journalctl -u trendlens -f    # 실시간 로그
 ```
 
 `deploy/trendlens.service`의 `WorkingDirectory`와 `ExecStart` 경로를 실제 서버 경로에 맞게 수정하세요.
+
+> `data/guild_configs/` 및 `logs/` 디렉토리는 서비스 시작 시 자동 생성됩니다.
+
+### Discord Developer Portal 설정
+
+1. [Discord Developer Portal](https://discord.com/developers/applications)에서 봇 생성
+2. **OAuth2 → URL Generator**: 스코프 `bot`, `applications.commands` 선택
+3. 봇 권한: `Send Messages`, `Read Message History`, `Attach Files` 선택
+4. 생성된 초대 URL로 각 서버에 봇 초대
 
 ---
 
@@ -236,8 +253,8 @@ node -e "require('./src/fetchers/github-trending').fetch().then(r => console.log
 ```bash
 # 1) 작업 브랜치에서 커밋
 git switch preview
-git add README.md src/index.js src/keyStore.js tests/keyStore.test.js
-git commit -m "docs(readme): reflect scheduler behavior and preview-main workflow"
+git add .
+git commit -m "feat: multi-guild server-level API key support"
 git push -u origin preview
 
 # 2) main은 ff-only로 반영

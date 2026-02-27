@@ -22,8 +22,8 @@ const FETCHER_MAP = {
   huggingface: hf,
 };
 
-async function runPipeline({ date, sources, userId, apiKey, redditCredentials } = {}) {
-  const raw = sources || config.get('sources');
+async function runPipeline({ date, sources, guildId, apiKey, redditCredentials, triggeredBy } = {}) {
+  const raw = sources || (guildId ? config.get(guildId, 'sources') : null) || {};
   const activeSources = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
   const startTime = Date.now();
 
@@ -77,7 +77,8 @@ async function runPipeline({ date, sources, userId, apiKey, redditCredentials } 
   if (apiKey) {
     try {
       const summarizer = require('./summarizer');
-      parsedData = await summarizer.summarizeTrends(itemsForSummary, apiKey, config.get('language'));
+      const language = guildId ? config.get(guildId, 'language') : 'ko';
+      parsedData = await summarizer.summarizeTrends(itemsForSummary, apiKey, language);
       geminiUsed = !!parsedData;
       if (!parsedData) geminiSkipReason = 'api_error';
     } catch (err) {
@@ -85,12 +86,11 @@ async function runPipeline({ date, sources, userId, apiKey, redditCredentials } 
       logger.warn(`요약 실패: ${err.message}`);
     }
   } else {
-    geminiSkipReason = 'no_personal_key';
-    logger.info('요약 생략: 개인 키 미등록');
+    geminiSkipReason = 'no_server_key';
+    logger.info('요약 생략: 서버 API 키 미등록');
   }
 
   // item_summaries를 allItems에 정확하게 매핑
-  // promptIdx(0~N)는 topByScore 순서 기준, originalIdx로 역추적하여 allItems에 반영
   if (parsedData && typeof parsedData === 'object' && parsedData.item_summaries) {
     let mapped = 0;
     topByScore.forEach(({ originalIdx }, promptIdx) => {
@@ -110,8 +110,8 @@ async function runPipeline({ date, sources, userId, apiKey, redditCredentials } 
     executed_at: new Date().toISOString(),
     sources: sourceMeta,
     after_dedup: allItems.length,
-    triggered_by: userId ? '/trend' : 'schedule',
-    user_id: userId || null,
+    triggered_by: triggeredBy || 'schedule',
+    guild_id: guildId || null,
     gemini_used: geminiUsed,
     gemini_skip_reason: geminiSkipReason,
     gemini_parsed_json: parsedData !== null && typeof parsedData === 'object',
@@ -123,8 +123,9 @@ async function runPipeline({ date, sources, userId, apiKey, redditCredentials } 
   try {
     const logsDir = path.join(__dirname, '..', 'logs');
     if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+    const logFileName = guildId ? `result_${dateStr}_${guildId}.json` : `result_${dateStr}.json`;
     fs.writeFileSync(
-      path.join(logsDir, `result_${dateStr}.json`),
+      path.join(logsDir, logFileName),
       JSON.stringify(meta, null, 2),
       'utf-8',
     );

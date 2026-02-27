@@ -7,63 +7,71 @@ const logger = require('./logger');
 const SALT = process.env.USAGE_SALT || 'trendlens-usage-salt-v1';
 const LOGS_DIR = path.join(__dirname, '..', 'logs');
 
-const keys = new Map();
-const redditCredentials = new Map();
-const usage = new Map();
+const guildKeys = new Map();
+const guildReddit = new Map();
+const guildUsage = new Map();
 let diskUsageCache = null;
 
-function hashUserId(userId) {
-  return crypto.createHash('sha256').update(userId + SALT).digest('hex').slice(0, 16);
+function hashId(id) {
+  return crypto.createHash('sha256').update(id + SALT).digest('hex').slice(0, 16);
 }
 
-function setKey(userId, apiKey) {
-  keys.set(userId, apiKey);
-  logger.info(`[KeyStore] user:${hashUserId(userId)} 키 등록`);
+// ─── API Key ────────────────────────────────────────────────────────────────
+
+function setGuildKey(guildId, apiKey) {
+  guildKeys.set(guildId, apiKey);
+  logger.info(`[KeyStore] guild:${hashId(guildId)} 키 등록`);
 }
 
-function getKey(userId) {
-  return keys.get(userId) || null;
+function getGuildKey(guildId) {
+  return guildKeys.get(guildId) || null;
 }
 
-function removeKey(userId) {
-  const had = keys.delete(userId);
-  if (had) logger.info(`[KeyStore] user:${hashUserId(userId)} 키 삭제`);
+function removeGuildKey(guildId) {
+  const had = guildKeys.delete(guildId);
+  if (had) logger.info(`[KeyStore] guild:${hashId(guildId)} 키 삭제`);
   return had;
 }
 
-function hasKey(userId) {
-  return keys.has(userId);
+function hasGuildKey(guildId) {
+  return guildKeys.has(guildId);
 }
 
-function getKeyPreview(userId) {
-  const key = keys.get(userId);
+function getGuildKeyPreview(guildId) {
+  const key = guildKeys.get(guildId);
   if (!key) return null;
   return '****' + key.slice(-4);
 }
+
+function getGuildKeyCount() {
+  return guildKeys.size;
+}
+
+// ─── Usage ──────────────────────────────────────────────────────────────────
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function getUsageEntry(userId) {
-  if (!usage.has(userId)) {
+function getUsageEntry(guildId) {
+  if (!guildUsage.has(guildId)) {
     if (diskUsageCache) {
-      const hashed = hashUserId(userId);
+      const hashed = hashId(guildId);
       const diskEntry = diskUsageCache[hashed];
       if (diskEntry && diskEntry.count > 0) {
-        usage.set(userId, {
+        guildUsage.set(guildId, {
           count: diskEntry.count,
           lastUsedAt: diskEntry.lastUsedAt || null,
           lastCommand: diskEntry.lastCommand || null,
           date: todayStr(),
         });
-        logger.info(`[KeyStore] user:${hashed} 디스크에서 사용량 복원 (${diskEntry.count}건)`);
-        return usage.get(userId);
+        logger.info(`[KeyStore] guild:${hashed} 디스크에서 사용량 복원 (${diskEntry.count}건)`);
+        return guildUsage.get(guildId);
       }
     }
-    usage.set(userId, { count: 0, lastUsedAt: null, lastCommand: null, date: todayStr() });
+    guildUsage.set(guildId, { count: 0, lastUsedAt: null, lastCommand: null, date: todayStr() });
   }
-  const entry = usage.get(userId);
+  const entry = guildUsage.get(guildId);
   if (entry.date !== todayStr()) {
     entry.count = 0;
     entry.lastUsedAt = null;
@@ -73,20 +81,20 @@ function getUsageEntry(userId) {
   return entry;
 }
 
-function incrementUsage(userId, command) {
-  const entry = getUsageEntry(userId);
+function incrementGuildUsage(guildId, command) {
+  const entry = getUsageEntry(guildId);
   entry.count++;
   entry.lastUsedAt = new Date().toISOString();
   entry.lastCommand = command;
 
-  const rpd = config.get('geminiRpd') || 50;
+  const rpd = config.get(guildId, 'geminiRpd') || 50;
   const pct = Math.round((entry.count / rpd) * 100);
-  logger.info(`[user:${hashUserId(userId)}] Gemini API 사용량: ${entry.count}/${rpd} RPD (${pct}%)`);
+  logger.info(`[guild:${hashId(guildId)}] Gemini API 사용량: ${entry.count}/${rpd} RPD (${pct}%)`);
 
-  appendUsageToDisk(userId, entry);
+  appendUsageToDisk(guildId, entry);
 }
 
-function appendUsageToDisk(userId, entry) {
+function appendUsageToDisk(guildId, entry) {
   try {
     if (!fs.existsSync(LOGS_DIR)) fs.mkdirSync(LOGS_DIR, { recursive: true });
     const filePath = path.join(LOGS_DIR, `gemini_usage_${todayStr()}.json`);
@@ -95,26 +103,26 @@ function appendUsageToDisk(userId, entry) {
     if (fs.existsSync(filePath)) {
       data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
     }
-    data[hashUserId(userId)] = { count: entry.count, lastUsedAt: entry.lastUsedAt, lastCommand: entry.lastCommand };
+    data[hashId(guildId)] = { count: entry.count, lastUsedAt: entry.lastUsedAt, lastCommand: entry.lastCommand };
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
   } catch (err) {
     logger.warn(`[KeyStore] 사용량 디스크 기록 실패: ${err.message}`);
   }
 }
 
-function getUsage(userId) {
-  const entry = getUsageEntry(userId);
+function getGuildUsage(guildId) {
+  const entry = getUsageEntry(guildId);
   return { count: entry.count, lastUsedAt: entry.lastUsedAt, lastCommand: entry.lastCommand };
 }
 
-function isQuotaExceeded(userId) {
-  const entry = getUsageEntry(userId);
-  return entry.count >= (config.get('geminiRpd') || 50);
+function isGuildQuotaExceeded(guildId) {
+  const entry = getUsageEntry(guildId);
+  return entry.count >= (config.get(guildId, 'geminiRpd') || 50);
 }
 
-function getQuotaWarningLevel(userId) {
-  const entry = getUsageEntry(userId);
-  const rpd = config.get('geminiRpd') || 50;
+function getGuildQuotaWarningLevel(guildId) {
+  const entry = getUsageEntry(guildId);
+  const rpd = config.get(guildId, 'geminiRpd') || 50;
   const pct = (entry.count / rpd) * 100;
   if (pct >= 100) return 'exceeded';
   if (pct >= 80) return 'warning';
@@ -122,7 +130,7 @@ function getQuotaWarningLevel(userId) {
 }
 
 function resetDailyUsage() {
-  for (const [, entry] of usage.entries()) {
+  for (const [, entry] of guildUsage.entries()) {
     entry.count = 0;
     entry.lastUsedAt = null;
     entry.lastCommand = null;
@@ -143,71 +151,36 @@ function restoreFromDisk() {
   }
 }
 
-function setReddit(userId, clientId, clientSecret) {
-  redditCredentials.set(userId, { clientId, clientSecret });
-  logger.info(`[KeyStore] user:${hashUserId(userId)} Reddit OAuth 등록`);
+// ─── Reddit ─────────────────────────────────────────────────────────────────
+
+function setGuildReddit(guildId, clientId, clientSecret) {
+  guildReddit.set(guildId, { clientId, clientSecret });
+  logger.info(`[KeyStore] guild:${hashId(guildId)} Reddit OAuth 등록`);
 }
 
-function getReddit(userId) {
-  return redditCredentials.get(userId) || null;
+function getGuildReddit(guildId) {
+  return guildReddit.get(guildId) || null;
 }
 
-function removeReddit(userId) {
-  const had = redditCredentials.delete(userId);
-  if (had) logger.info(`[KeyStore] user:${hashUserId(userId)} Reddit OAuth 삭제`);
+function removeGuildReddit(guildId) {
+  const had = guildReddit.delete(guildId);
+  if (had) logger.info(`[KeyStore] guild:${hashId(guildId)} Reddit OAuth 삭제`);
   return had;
 }
 
-function hasReddit(userId) {
-  return redditCredentials.has(userId);
+function hasGuildReddit(guildId) {
+  return guildReddit.has(guildId);
 }
 
-function getRedditPreview(userId) {
-  const cred = redditCredentials.get(userId);
+function getGuildRedditPreview(guildId) {
+  const cred = guildReddit.get(guildId);
   if (!cred) return null;
   return cred.clientId.slice(0, 4) + '****';
 }
 
-function getAnyRedditCredentials() {
-  for (const cred of redditCredentials.values()) {
-    return cred;
-  }
-  return null;
-}
-
-function getAnyKey() {
-  for (const key of keys.values()) return key;
-  return null;
-}
-
-function getAnyUsableKey() {
-  const rpd = config.get('geminiRpd') || 50;
-  const candidates = [];
-
-  for (const [userId, key] of keys.entries()) {
-    const entry = getUsageEntry(userId);
-    if (entry.count < rpd) {
-      candidates.push({ key, count: entry.count, lastUsedAt: entry.lastUsedAt || '' });
-    }
-  }
-
-  if (candidates.length === 0) return null;
-
-  candidates.sort((a, b) => {
-    if (a.count !== b.count) return a.count - b.count;
-    return String(b.lastUsedAt).localeCompare(String(a.lastUsedAt));
-  });
-
-  return candidates[0].key;
-}
-
-function getKeyCount() {
-  return keys.size;
-}
-
 module.exports = {
-  setKey, getKey, removeKey, hasKey, getKeyPreview, getAnyKey, getAnyUsableKey, getKeyCount,
-  setReddit, getReddit, removeReddit, hasReddit, getRedditPreview, getAnyRedditCredentials,
-  incrementUsage, getUsage, isQuotaExceeded, getQuotaWarningLevel,
-  resetDailyUsage, restoreFromDisk, hashUserId,
+  setGuildKey, getGuildKey, removeGuildKey, hasGuildKey, getGuildKeyPreview, getGuildKeyCount,
+  setGuildReddit, getGuildReddit, removeGuildReddit, hasGuildReddit, getGuildRedditPreview,
+  incrementGuildUsage, getGuildUsage, isGuildQuotaExceeded, getGuildQuotaWarningLevel,
+  resetDailyUsage, restoreFromDisk, hashId,
 };

@@ -1,7 +1,7 @@
 /* globals: describe, it, expect, beforeEach, afterEach, vi */
 
 vi.mock('../src/config', () => ({
-  get: vi.fn((key) => {
+  get: vi.fn((guildId, key) => {
     if (key === 'geminiRpd') return 50;
     return undefined;
   }),
@@ -17,121 +17,125 @@ vi.mock('../src/logger', () => ({
 
 const keyStore = require('../src/keyStore');
 
-const TEST_USER = 'test-user-' + Date.now();
-let userCounter = 0;
-const createdUsers = [];
+const TEST_GUILD_PREFIX = 'test-guild-' + Date.now();
+let guildCounter = 0;
+const createdGuilds = [];
 
-function uniqueUser() {
-  const userId = `${TEST_USER}-${++userCounter}`;
-  createdUsers.push(userId);
-  return userId;
+function uniqueGuild() {
+  const guildId = `${TEST_GUILD_PREFIX}-${++guildCounter}`;
+  createdGuilds.push(guildId);
+  return guildId;
 }
 
 afterEach(() => {
-  for (const userId of createdUsers.splice(0)) {
-    keyStore.removeKey(userId);
-    keyStore.removeReddit(userId);
+  for (const guildId of createdGuilds.splice(0)) {
+    keyStore.removeGuildKey(guildId);
+    keyStore.removeGuildReddit(guildId);
   }
 });
 
 describe('KeyStore', () => {
   it('키 등록/조회/삭제', () => {
-    const userId = uniqueUser();
-    expect(keyStore.hasKey(userId)).toBe(false);
+    const guildId = uniqueGuild();
+    expect(keyStore.hasGuildKey(guildId)).toBe(false);
 
-    keyStore.setKey(userId, 'test-api-key-1234');
-    expect(keyStore.hasKey(userId)).toBe(true);
-    expect(keyStore.getKey(userId)).toBe('test-api-key-1234');
-    expect(keyStore.getKeyPreview(userId)).toBe('****1234');
+    keyStore.setGuildKey(guildId, 'test-api-key-1234');
+    expect(keyStore.hasGuildKey(guildId)).toBe(true);
+    expect(keyStore.getGuildKey(guildId)).toBe('test-api-key-1234');
+    expect(keyStore.getGuildKeyPreview(guildId)).toBe('****1234');
 
-    keyStore.removeKey(userId);
-    expect(keyStore.hasKey(userId)).toBe(false);
-    expect(keyStore.getKey(userId)).toBeNull();
+    keyStore.removeGuildKey(guildId);
+    expect(keyStore.hasGuildKey(guildId)).toBe(false);
+    expect(keyStore.getGuildKey(guildId)).toBeNull();
   });
 
   it('사용량 추적', () => {
-    const userId = uniqueUser();
-    keyStore.setKey(userId, 'key');
-    keyStore.incrementUsage(userId, '/trend');
+    const guildId = uniqueGuild();
+    keyStore.setGuildKey(guildId, 'key');
+    keyStore.incrementGuildUsage(guildId, '/trend');
 
-    const usage = keyStore.getUsage(userId);
+    const usage = keyStore.getGuildUsage(guildId);
     expect(usage.count).toBe(1);
     expect(usage.lastCommand).toBe('/trend');
     expect(usage.lastUsedAt).toBeTruthy();
   });
 
   it('쿼터 초과 판별', () => {
-    const userId = uniqueUser();
-    keyStore.setKey(userId, 'key');
-    expect(keyStore.isQuotaExceeded(userId)).toBe(false);
+    const guildId = uniqueGuild();
+    keyStore.setGuildKey(guildId, 'key');
+    expect(keyStore.isGuildQuotaExceeded(guildId)).toBe(false);
 
     for (let i = 0; i < 50; i++) {
-      keyStore.incrementUsage(userId, '/trend');
+      keyStore.incrementGuildUsage(guildId, '/trend');
     }
-    expect(keyStore.isQuotaExceeded(userId)).toBe(true);
+    expect(keyStore.isGuildQuotaExceeded(guildId)).toBe(true);
   });
 
   it('경고 레벨: normal → warning → exceeded', () => {
-    const userId = uniqueUser();
-    keyStore.setKey(userId, 'key');
-    expect(keyStore.getQuotaWarningLevel(userId)).toBe('normal');
+    const guildId = uniqueGuild();
+    keyStore.setGuildKey(guildId, 'key');
+    expect(keyStore.getGuildQuotaWarningLevel(guildId)).toBe('normal');
 
     for (let i = 0; i < 40; i++) {
-      keyStore.incrementUsage(userId, '/trend');
+      keyStore.incrementGuildUsage(guildId, '/trend');
     }
-    expect(keyStore.getQuotaWarningLevel(userId)).toBe('warning');
+    expect(keyStore.getGuildQuotaWarningLevel(guildId)).toBe('warning');
 
     for (let i = 0; i < 10; i++) {
-      keyStore.incrementUsage(userId, '/trend');
+      keyStore.incrementGuildUsage(guildId, '/trend');
     }
-    expect(keyStore.getQuotaWarningLevel(userId)).toBe('exceeded');
+    expect(keyStore.getGuildQuotaWarningLevel(guildId)).toBe('exceeded');
   });
 
-  it('getAnyUsableKey는 쿼터 미초과 키를 우선 선택', () => {
-    const exceededUser = uniqueUser();
-    const availableUser = uniqueUser();
-
-    keyStore.setKey(exceededUser, 'key-exceeded');
-    keyStore.setKey(availableUser, 'key-available');
-
-    for (let i = 0; i < 50; i++) {
-      keyStore.incrementUsage(exceededUser, '/trend');
-    }
-
-    expect(keyStore.isQuotaExceeded(exceededUser)).toBe(true);
-    expect(keyStore.getAnyUsableKey()).toBe('key-available');
+  it('서버 키 미등록 시 getGuildKey는 null 반환', () => {
+    const guildId = uniqueGuild();
+    expect(keyStore.getGuildKey(guildId)).toBeNull();
   });
 
-  it('getAnyUsableKey는 모든 키가 한도 초과면 null 반환', () => {
-    const userA = uniqueUser();
-    const userB = uniqueUser();
-
-    keyStore.setKey(userA, 'key-a');
-    keyStore.setKey(userB, 'key-b');
-
-    for (let i = 0; i < 50; i++) {
-      keyStore.incrementUsage(userA, '/trend');
-      keyStore.incrementUsage(userB, '/trend');
-    }
-
-    expect(keyStore.getAnyUsableKey()).toBeNull();
+  it('서버 키 미등록 삭제 시 false 반환', () => {
+    const guildId = uniqueGuild();
+    expect(keyStore.removeGuildKey(guildId)).toBe(false);
   });
 
-  it('userId 해시 일관성 및 길이', () => {
-    const userId = uniqueUser();
-    const h1 = keyStore.hashUserId(userId);
-    const h2 = keyStore.hashUserId(userId);
+  it('서버 키 미등록 프리뷰는 null', () => {
+    const guildId = uniqueGuild();
+    expect(keyStore.getGuildKeyPreview(guildId)).toBeNull();
+  });
+
+  it('getGuildKeyCount는 등록된 서버 수 반환', () => {
+    const guildA = uniqueGuild();
+    const guildB = uniqueGuild();
+    const before = keyStore.getGuildKeyCount();
+
+    keyStore.setGuildKey(guildA, 'key-a');
+    keyStore.setGuildKey(guildB, 'key-b');
+    expect(keyStore.getGuildKeyCount()).toBe(before + 2);
+  });
+
+  it('hashId 일관성 및 길이', () => {
+    const guildId = uniqueGuild();
+    const h1 = keyStore.hashId(guildId);
+    const h2 = keyStore.hashId(guildId);
     expect(h1).toBe(h2);
     expect(h1).toHaveLength(16);
   });
 
-  it('미등록 키 삭제 시 false', () => {
-    const userId = uniqueUser();
-    expect(keyStore.removeKey(userId)).toBe(false);
+  it('Reddit OAuth 등록/조회/삭제', () => {
+    const guildId = uniqueGuild();
+    expect(keyStore.hasGuildReddit(guildId)).toBe(false);
+
+    keyStore.setGuildReddit(guildId, 'client-id-abcd', 'secret-xyz');
+    expect(keyStore.hasGuildReddit(guildId)).toBe(true);
+    expect(keyStore.getGuildReddit(guildId)).toEqual({ clientId: 'client-id-abcd', clientSecret: 'secret-xyz' });
+    expect(keyStore.getGuildRedditPreview(guildId)).toBe('clie****');
+
+    keyStore.removeGuildReddit(guildId);
+    expect(keyStore.hasGuildReddit(guildId)).toBe(false);
+    expect(keyStore.getGuildReddit(guildId)).toBeNull();
   });
 
-  it('미등록 키 프리뷰 null', () => {
-    const userId = uniqueUser();
-    expect(keyStore.getKeyPreview(userId)).toBeNull();
+  it('미등록 Reddit 삭제 시 false 반환', () => {
+    const guildId = uniqueGuild();
+    expect(keyStore.removeGuildReddit(guildId)).toBe(false);
   });
 });
