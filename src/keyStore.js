@@ -178,9 +178,16 @@ function getGuildRedditPreview(guildId) {
   return cred.clientId.slice(0, 4) + '****';
 }
 
+function removeGuildData(guildId) {
+  removeGuildKey(guildId);
+  removeGuildReddit(guildId);
+  guildUsage.delete(guildId);
+  logger.info(`[KeyStore] guild:${hashId(guildId)} 전체 데이터 삭제 (서버 탈퇴)`);
+}
+
 module.exports = {
   setGuildKey, getGuildKey, removeGuildKey, hasGuildKey, getGuildKeyPreview, getGuildKeyCount,
   setGuildReddit, getGuildReddit, removeGuildReddit, hasGuildReddit, getGuildRedditPreview,
   incrementGuildUsage, getGuildUsage, isGuildQuotaExceeded, getGuildQuotaWarningLevel,
-  resetDailyUsage, restoreFromDisk, hashId,
+  resetDailyUsage, restoreFromDisk, hashId, removeGuildData,
 };

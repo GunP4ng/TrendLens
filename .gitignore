@@ -4,3 +4,4 @@ node_modules/
 .sisyphus/
 data/
 logs/
+config_override.json

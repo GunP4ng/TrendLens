@@ -16,8 +16,6 @@ const {
   PermissionFlagsBits, AttachmentBuilder, ChannelType, MessageFlags, Events,
 } = require('discord.js');
 const cron = require('node-cron');
-const dns = require('node:dns');
-const net = require('node:net');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -28,6 +26,11 @@ const { runPipeline } = require('./pipeline');
 const summarizer = require('./summarizer');
 const formatter = require('./formatter');
 const { getKstIsoDate } = formatter;
+const {
+  safePayload, safeContent, withTimeout,
+  isSafeUrl,
+  toCronExpr, formatUptime, validateDate,
+} = require('./utils');
 
 const LOGS_DIR = path.join(__dirname, '..', 'logs');
 const BOT_START_TIME = Date.now();
@@ -40,30 +43,7 @@ const lastGuildPipelineRun = new Map(); // guildId → ISO timestamp
 let dailyResetCronJob = null;
 
 const cooldowns = new Map();            // `${guildId}:${userId}` → timestamp
-const SAFE_ALLOWED_MENTIONS = { parse: [] };
 const URL_EXTRACT_TIMEOUT_MS = 10_000;
-
-function safePayload(payload = {}) {
-  return { ...payload, allowedMentions: SAFE_ALLOWED_MENTIONS };
-}
-
-function safeContent(content, extra = {}) {
-  return safePayload({ content, ...extra });
-}
-
-async function withTimeout(promise, ms, errorMessage) {
-  let timer;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(errorMessage)), ms);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
 
 // cooldowns Map에서 만료된 항목 정리 (메모리 누수 방지)
 function cleanupCooldowns() {
@@ -142,57 +122,6 @@ const commands = [
 ];
 
 // ──────────────────────────────────────────────
-// SSRF Prevention
-// ──────────────────────────────────────────────
-
-function isPrivateIP(ip) {
-  if (net.isIPv4(ip)) {
-    const parts = ip.split('.').map(Number);
-    if (parts[0] === 127) return true;
-    if (parts[0] === 10) return true;
-    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
-    if (parts[0] === 192 && parts[1] === 168) return true;
-    if (parts[0] === 169 && parts[1] === 254) return true;
-    if (parts[0] === 0) return true;
-    return false;
-  }
-  if (net.isIPv6(ip)) {
-    const normalized = ip.toLowerCase();
-    if (normalized === '::1') return true;
-    if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
-    if (normalized.startsWith('fe80')) return true;
-    return false;
-  }
-  return false;
-}
-
-async function isSafeUrl(urlString) {
-  try {
-    const { hostname } = new URL(urlString);
-
-    if (net.isIP(hostname)) {
-      return !isPrivateIP(hostname);
-    }
-
-    const [aRecords, aaaaRecords] = await Promise.all([
-      dns.promises.resolve4(hostname).catch(() => []),
-      dns.promises.resolve6(hostname).catch(() => []),
-    ]);
-
-    let allRecords = [...aRecords, ...aaaaRecords];
-    if (allRecords.length === 0) {
-      const lookedUp = await dns.promises.lookup(hostname, { all: true }).catch(() => []);
-      allRecords = lookedUp.map((entry) => entry.address);
-    }
-
-    if (allRecords.length === 0) return false;
-    return allRecords.every((addr) => !isPrivateIP(addr));
-  } catch {
-    return false;
-  }
-}
-
-// ──────────────────────────────────────────────
 // Cooldown
 // ──────────────────────────────────────────────
 
@@ -213,54 +142,6 @@ function checkCooldown(userId, guildId, commandName) {
 
   cooldowns.set(key, now);
   return null;
-}
-
-// ──────────────────────────────────────────────
-// Date Validation
-// ──────────────────────────────────────────────
-
-function validateDate(dateStr) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-    return { valid: false, error: '📅 날짜 형식이 올바르지 않습니다. 예: 2026-02-25' };
-  }
-  const d = new Date(dateStr + 'T00:00:00Z');
-  if (isNaN(d.getTime())) {
-    return { valid: false, error: '📅 날짜 형식이 올바르지 않습니다. 예: 2026-02-25' };
-  }
-
-  const today = new Date(`${getKstIsoDate()}T00:00:00Z`);
-
-  if (d.getTime() > today.getTime()) {
-    return { valid: false, error: '📅 미래 날짜는 조회할 수 없습니다. 오늘 또는 과거 날짜를 입력해주세요.' };
-  }
-
-  const thirtyDaysAgo = new Date(today.getTime() - 30 * 86_400_000);
-  if (d.getTime() < thirtyDaysAgo.getTime()) {
-    return { valid: false, error: '📅 최대 30일 전까지만 조회할 수 있습니다.' };
-  }
-
-  return { valid: true };
-}
-
-// ──────────────────────────────────────────────
-// Cron Helpers
-// ──────────────────────────────────────────────
-
-function toCronExpr(timeStr) {
-  const [h, m] = timeStr.split(':').map(Number);
-  return `${m} ${h} * * *`;
-}
-
-function formatUptime(ms) {
-  const sec = Math.floor(ms / 1000);
-  const d = Math.floor(sec / 86400);
-  const h = Math.floor((sec % 86400) / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const parts = [];
-  if (d > 0) parts.push(`${d}일`);
-  if (h > 0) parts.push(`${h}시간`);
-  parts.push(`${m}분`);
-  return parts.join(' ');
 }
 
 // ──────────────────────────────────────────────
@@ -286,7 +167,7 @@ function cleanupOldLogs(retentionDays = 30) {
         const match = file.match(re);
         const fileTime = match ? parseLogDate(match[1]) : null;
         if (fileTime && fileTime < cutoff) {
-          try { fs.unlinkSync(path.join(LOGS_DIR, file)); } catch { /* ignore */ }
+          try { fs.unlinkSync(path.join(LOGS_DIR, file)); } catch (e) { logger.warn(`로그 파일 삭제 실패 (${file}): ${e.message}`); }
         }
       }
     }
@@ -306,12 +187,12 @@ function shouldSendRestartNotice() {
       const lastNotice = parseInt(fs.readFileSync(noticePath, 'utf-8').trim(), 10);
       if (Date.now() - lastNotice < 10 * 60 * 1000) return false;
     }
-  } catch { /* proceed */ }
+  } catch (e) { logger.warn(`재시작 공지 상태 읽기 실패: ${e.message}`); }
 
   try {
     if (!fs.existsSync(LOGS_DIR)) fs.mkdirSync(LOGS_DIR, { recursive: true });
     fs.writeFileSync(noticePath, String(Date.now()), 'utf-8');
-  } catch { /* ignore */ }
+  } catch (e) { logger.warn(`재시작 공지 상태 기록 실패: ${e.message}`); }
 
   return true;
 }
@@ -325,7 +206,7 @@ async function handleTrend(interaction) {
   const dateOpt = interaction.options.getString('date');
 
   if (dateOpt) {
-    const v = validateDate(dateOpt);
+    const v = validateDate(dateOpt, getKstIsoDate());
     if (!v.valid) return interaction.reply(safePayload({ content: v.error, ephemeral: true }));
   }
 
@@ -381,7 +262,7 @@ async function handleTrend(interaction) {
       } else {
         await interaction.reply(safePayload({ content: `❌ 트렌드 수집에 실패했습니다: ${err.message}`, ephemeral: true }));
       }
-    } catch { /* ignore response error */ }
+    } catch (replyErr) { logger.warn(`/trend 오류 응답 전송 실패: ${replyErr.message}`); }
   } finally {
     runningGuilds.delete(guildId);
   }
@@ -816,6 +697,15 @@ client.on(Events.GuildCreate, async (guild) => {
   }
 });
 
+client.on(Events.GuildDelete, (guild) => {
+  const guildId = guild.id;
+  logger.info(`서버 탈퇴: ${guild.name} (${guildId}) — 메모리 데이터 정리`);
+  stopGuildCron(guildId);
+  runningGuilds.delete(guildId);
+  lastGuildPipelineRun.delete(guildId);
+  keyStore.removeGuildData(guildId);
+});
+
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
@@ -844,7 +734,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         } else {
           await interaction.reply(safePayload({ content: `❌ 오류가 발생했습니다: ${err.message}`, ephemeral: true }));
         }
-      } catch { /* ignore response error */ }
+      } catch (replyErr) { logger.warn(`[${cmdName}] 오류 응답 전송 실패: ${replyErr.message}`); }
     }
   }
 });
@@ -907,7 +797,7 @@ async function runScheduledPipeline(guildId) {
         const channel = channelId ? await client.channels.fetch(channelId).catch(() => null) : null;
         if (channel) await channel.send(safeContent(`❌ 자동 트렌드 수집에 실패했습니다: ${err.message}`));
       }
-    } catch { /* ignore */ }
+    } catch (notifyErr) { logger.warn(`[guild:${guildId}] 스케줄 오류 알림 전송 실패: ${notifyErr.message}`); }
   } finally {
     runningGuilds.delete(guildId);
   }
@@ -957,7 +847,8 @@ function startDailyResetCron() {
 async function shutdown(signal) {
   logger.info(`${signal} 수신 — 봇 종료 중...`);
   try {
-    for (const [guildId] of guildCronJobs) {
+    // Map 순회 중 수정(delete) 충돌 방지를 위해 키 목록을 스냅샷으로 복사
+    for (const guildId of [...guildCronJobs.keys()]) {
       stopGuildCron(guildId);
     }
     if (dailyResetCronJob) { dailyResetCronJob.stop(); }

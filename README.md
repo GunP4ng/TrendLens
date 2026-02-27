@@ -22,7 +22,8 @@
 | **서버 Reddit OAuth** | 서버 단위 Reddit OAuth 등록으로 안정적인 수집 (관리자 등록) |
 | **SSRF 방어** | IPv4/IPv6, A/AAAA, IP literal 검사로 내부망 접근 차단 |
 | **멘션 안전화** | 외부 콘텐츠 전송 시 `allowedMentions` 차단으로 무분별한 ping 방지 |
-| **품질 게이트** | `lint + typecheck + test` 빌드 검증 및 GitHub Actions CI 제공 |
+| **품질 게이트** | `lint + typecheck + test + coverage` 빌드 검증 및 GitHub Actions CI (보안 감사 포함) |
+| **메모리 안전성** | 서버 탈퇴 시 크론·키·사용량 데이터 자동 정리 (GuildDelete 핸들러) |
 
 ---
 
@@ -127,6 +128,7 @@ trendlens/
 │   ├── summarizer.js       # Gemini API 호출 & 프롬프트 빌더
 │   ├── formatter.js        # Discord 메시지 포맷터
 │   ├── urlUtils.js         # URL 정규화 & 중복 제거 유틸
+│   ├── utils.js            # 순수 유틸리티 (SSRF 검증, 날짜 검증, 타임아웃 등)
 │   ├── logger.js           # Winston 로거 (민감정보 마스킹 포함)
 │   └── fetchers/
 │       ├── hackernews.js   # HackerNews Algolia API
@@ -138,11 +140,12 @@ trendlens/
 │   ├── fetchers.test.js
 │   ├── formatter.test.js
 │   ├── keyStore.test.js
-│   ├── pipeline.test.js
-│   └── summarizer.test.js
+│   ├── pipeline.test.js    # runPipeline 통합 테스트 포함
+│   ├── summarizer.test.js
+│   └── utils.test.js       # SSRF·날짜·타임아웃 등 유틸 단위 테스트
 ├── .github/
 │   └── workflows/
-│       └── ci.yml            # lint/typecheck/test 자동 검증
+│       └── ci.yml            # npm audit + lint/typecheck/test/coverage 자동 검증
 ├── deploy/
 │   └── trendlens.service   # systemd 서비스 유닛 파일
 ├── data/                   # 런타임 서버별 설정 (gitignore)
@@ -224,14 +227,18 @@ npm run typecheck
 # 전체 단위 테스트 실행
 npm test
 
+# 커버리지 측정 포함 테스트 (thresholds: lines/functions/branches 60%)
+npx vitest run --coverage
+
 # 전체 품질 게이트 (lint + typecheck + test)
 npm run build
 
-# 운영 의존성 취약점 점검
-npm audit --omit=dev
+# 보안 취약점 점검 (high 이상 차단)
+npm audit --audit-level=high
 
 # 특정 테스트 파일만 실행
-npx vitest run tests/formatter.test.js
+npx vitest run tests/utils.test.js
+npx vitest run tests/pipeline.test.js
 
 # 개별 fetcher 수동 테스트 (Node.js REPL)
 node -e "require('./src/fetchers/hackernews').fetch().then(r => console.log(r.slice(0,2)))"
@@ -243,7 +250,7 @@ node -e "require('./src/fetchers/github-trending').fetch().then(r => console.log
 
 - GitHub Actions: `.github/workflows/ci.yml`
 - 트리거: `main`, `master` 브랜치 push 및 모든 Pull Request
-- 실행 항목: `npm ci` → `npm run build`
+- 실행 항목: `npm ci` → `npm audit --audit-level=high` → `npm run build` → `vitest --coverage`
 
 ## Git Workflow (preview -> main)
 
@@ -278,6 +285,7 @@ git push origin main
 | [winston](https://github.com/winstonjs/winston) | ^3 | 구조화 로깅 |
 | [dotenv](https://github.com/motdotla/dotenv) | ^16 | 환경변수 로드 |
 | [vitest](https://vitest.dev) | ^3 | 단위 테스트 |
+| [@vitest/coverage-v8](https://vitest.dev/guide/coverage) | ^4 | 커버리지 측정 |
 | [msw](https://mswjs.io) | ^2 | API 모킹 (테스트용) |
 
 ---

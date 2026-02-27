@@ -91,13 +91,19 @@ async function runPipeline({ date, sources, guildId, apiKey, redditCredentials, 
   }
 
   // item_summaries를 allItems에 정확하게 매핑
-  if (parsedData && typeof parsedData === 'object' && parsedData.item_summaries) {
+  if (parsedData && typeof parsedData === 'object' && parsedData.item_summaries
+      && typeof parsedData.item_summaries === 'object') {
     let mapped = 0;
     topByScore.forEach(({ originalIdx }, promptIdx) => {
       const aiSummary = parsedData.item_summaries[String(promptIdx)];
-      if (aiSummary) {
-        allItems[originalIdx] = { ...allItems[originalIdx], aiSummary };
-        mapped++;
+      // aiSummary가 비어있는 문자열이나 null이면 매핑 생략
+      if (aiSummary && typeof aiSummary === 'string' && aiSummary.trim().length > 0) {
+        if (originalIdx >= 0 && originalIdx < allItems.length) {
+          allItems[originalIdx] = { ...allItems[originalIdx], aiSummary: aiSummary.trim() };
+          mapped++;
+        } else {
+          logger.warn(`[Pipeline] aiSummary 매핑 인덱스 범위 초과: originalIdx=${originalIdx}, total=${allItems.length}`);
+        }
       }
     });
     logger.info(`[Pipeline] aiSummary 매핑: ${mapped}/${topByScore.length}건`);
